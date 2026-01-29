@@ -30,7 +30,13 @@ GROQ_EMBEDDINGS_AVAILABLE = False  # Groq doesn't have embeddings endpoint
 
 class MatcherInput:
     """Input structure for the Matcher agent."""
-    def __init__(self, parsed_resume: ParsedResume, parsed_jd: ParsedJD):
+    def __init__(
+        self, 
+        candidate_id: str = "",
+        parsed_resume: Any = None,  # Can be ParsedResume or dict
+        parsed_jd: Any = None,  # Can be ParsedJD or dict
+    ):
+        self.candidate_id = candidate_id
         self.parsed_resume = parsed_resume
         self.parsed_jd = parsed_jd
 
@@ -76,6 +82,50 @@ class MatcherAgent(BaseAgent[MatcherInput, MatchResult]):
             "Calculates similarity scores between resumes and job descriptions "
             "with detailed, explainable metrics for each component."
         )
+    
+    def run(
+        self,
+        input_data: MatcherInput,
+        state: Optional["PipelineState"] = None
+    ) -> "AgentResult[MatchResult]":
+        """
+        Execute matching and return result.
+        
+        Args:
+            input_data: MatcherInput with parsed resume and JD
+            state: Optional pipeline state
+        
+        Returns:
+            AgentResult with MatchResult and updated state
+        """
+        from ..schemas.messages import PipelineState
+        from .base import AgentResult, AgentResponse, AgentStatus
+        
+        if state is None:
+            state = PipelineState()
+        
+        try:
+            result, confidence, explanation = self._process(input_data)
+            
+            response = AgentResponse(
+                agent_name=self.name,
+                status=AgentStatus.SUCCESS,
+                output=result,
+                confidence_score=confidence,
+                explanation=explanation,
+            )
+            
+            return AgentResult(response=response, state=state)
+            
+        except Exception as e:
+            response = AgentResponse(
+                agent_name=self.name,
+                status=AgentStatus.FAILURE,
+                output=None,
+                confidence_score=0.0,
+                explanation=f"Matching failed: {str(e)}",
+            )
+            return AgentResult(response=response, state=state)
     
     def _process(
         self, 

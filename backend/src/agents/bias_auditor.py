@@ -147,6 +147,50 @@ class BiasAuditorAgent(BaseAgent[BiasAuditInput, BiasAuditResult]):
     def required_confidence_threshold(self) -> float:
         return 0.9  # Compliance requires high confidence
     
+    def run(
+        self,
+        input_data: BiasAuditInput,
+        state: Optional["PipelineState"] = None
+    ) -> "AgentResult[BiasAuditResult]":
+        """
+        Execute bias audit and return result.
+        
+        Args:
+            input_data: BiasAuditInput with pipeline state and rankings
+            state: Optional pipeline state
+        
+        Returns:
+            AgentResult with BiasAuditResult and updated state
+        """
+        from ..schemas.messages import PipelineState
+        from .base import AgentResult, AgentResponse, AgentStatus
+        
+        if state is None:
+            state = PipelineState()
+        
+        try:
+            result, confidence, explanation = self._process(input_data)
+            
+            response = AgentResponse(
+                agent_name=self.name,
+                status=AgentStatus.SUCCESS,
+                output=result,
+                confidence_score=confidence,
+                explanation=explanation,
+            )
+            
+            return AgentResult(response=response, state=state)
+            
+        except Exception as e:
+            response = AgentResponse(
+                agent_name=self.name,
+                status=AgentStatus.FAILURE,
+                output=None,
+                confidence_score=0.0,
+                explanation=f"Bias audit failed: {str(e)}",
+            )
+            return AgentResult(response=response, state=state)
+    
     def _process(
         self, 
         input_data: BiasAuditInput
@@ -271,7 +315,14 @@ class BiasAuditorAgent(BaseAgent[BiasAuditInput, BiasAuditResult]):
         jd_text = ""
         if state.parsed_jd:
             # Check if there are already bias flags from JD analyzer
-            existing_flags = state.parsed_jd.get("potential_bias_flags", [])
+            # Handle both dataclass and dict formats
+            if hasattr(state.parsed_jd, 'potential_bias_flags'):
+                existing_flags = state.parsed_jd.potential_bias_flags or []
+            elif isinstance(state.parsed_jd, dict):
+                existing_flags = state.parsed_jd.get("potential_bias_flags", [])
+            else:
+                existing_flags = []
+            
             for flag in existing_flags:
                 findings.append(BiasFinding(
                     category="jd_language_bias",
@@ -282,7 +333,13 @@ class BiasAuditorAgent(BaseAgent[BiasAuditInput, BiasAuditResult]):
                 ))
         
         if state.job_description:
-            jd_text = state.job_description.get("raw_description", "")
+            # Handle both dataclass and dict formats
+            if hasattr(state.job_description, 'raw_description'):
+                jd_text = state.job_description.raw_description or ""
+            elif isinstance(state.job_description, dict):
+                jd_text = state.job_description.get("raw_description", "")
+            else:
+                jd_text = ""
         
         if not jd_text:
             return findings

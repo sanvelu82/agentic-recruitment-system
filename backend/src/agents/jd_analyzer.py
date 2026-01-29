@@ -129,6 +129,61 @@ class JDAnalyzerAgent(BaseAgent[JobDescription, ParsedJD]):
             "including skills, experience, education, and topics for assessment."
         )
     
+    def run(
+        self,
+        input_data: JobDescription,
+        state: Optional["PipelineState"] = None
+    ) -> "AgentResult[ParsedJD]":
+        """
+        Execute JD analysis and return result.
+        
+        Args:
+            input_data: JobDescription to analyze
+            state: Optional pipeline state (created if not provided)
+        
+        Returns:
+            AgentResult with ParsedJD and updated state
+        """
+        from ..schemas.messages import PipelineState
+        from .base import AgentResult, AgentResponse, AgentStatus
+        
+        # Create default state if not provided
+        if state is None:
+            state = PipelineState(job_id=input_data.job_id)
+        
+        try:
+            parsed, confidence, explanation = self._process(input_data)
+            
+            response = AgentResponse(
+                agent_name=self.name,
+                status=AgentStatus.SUCCESS,
+                output=parsed,
+                confidence_score=confidence,
+                explanation=explanation,
+            )
+            
+            # Update state with parsed JD
+            new_state = PipelineState(
+                pipeline_id=state.pipeline_id,
+                job_id=state.job_id,
+                current_stage=state.current_stage,
+                job_description=state.job_description,
+                parsed_jd=parsed.to_dict(),
+                candidates=state.candidates,
+            )
+            
+            return AgentResult(response=response, state=new_state)
+            
+        except Exception as e:
+            response = AgentResponse(
+                agent_name=self.name,
+                status=AgentStatus.FAILURE,
+                output=None,
+                confidence_score=0.0,
+                explanation=f"JD analysis failed: {str(e)}",
+            )
+            return AgentResult(response=response, state=state)
+    
     def _process(
         self, 
         input_data: JobDescription

@@ -77,10 +77,13 @@ class JobDescription:
     """
     job_id: str = field(default_factory=lambda: uuid4().hex)
     title: str = ""
+    company: str = ""  # Company name (may be anonymized)
     department: str = ""
     location: str = ""
     employment_type: str = ""  # full_time, part_time, contract
     raw_description: str = ""
+    experience_years_min: int = 0
+    experience_years_max: int = 20
     created_at: datetime = field(default_factory=datetime.utcnow)
     created_by: str = ""  # Hiring manager ID
     
@@ -96,10 +99,13 @@ class JobDescription:
         return {
             "job_id": self.job_id,
             "title": self.title,
+            "company": self.company,
             "department": self.department,
             "location": self.location,
             "employment_type": self.employment_type,
             "raw_description": self.raw_description,
+            "experience_years_min": self.experience_years_min,
+            "experience_years_max": self.experience_years_max,
             "created_at": self.created_at.isoformat(),
             "created_by": self.created_by,
             "positions_available": self.positions_available,

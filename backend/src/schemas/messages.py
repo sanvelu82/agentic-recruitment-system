@@ -195,6 +195,7 @@ class PipelineState:
     match_results: List[Dict[str, Any]] = field(default_factory=list)
     shortlisted_candidates: List[str] = field(default_factory=list)
     test_questions: List[Dict[str, Any]] = field(default_factory=list)
+    candidate_test_responses: Dict[str, List[Dict[str, Any]]] = field(default_factory=dict)  # candidate_id -> responses
     test_results: List[Dict[str, Any]] = field(default_factory=list)
     final_rankings: List[Dict[str, Any]] = field(default_factory=list)
     
@@ -223,6 +224,7 @@ class PipelineState:
             "match_results": self.match_results,
             "shortlisted_candidates": self.shortlisted_candidates,
             "test_questions": self.test_questions,
+            "candidate_test_responses": self.candidate_test_responses,
             "test_results": self.test_results,
             "final_rankings": self.final_rankings,
             "decision_gates": self.decision_gates,
