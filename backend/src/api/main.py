@@ -8,7 +8,7 @@ from contextlib import asynccontextmanager
 from typing import Any, Dict, List, Optional
 import os
 
-from fastapi import FastAPI, HTTPException, BackgroundTasks
+from fastapi import FastAPI, HTTPException, BackgroundTasks, File, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
@@ -220,6 +220,93 @@ async def add_candidate(job_id: str, candidate: CandidateCreateRequest):
     }
     
     return {"candidate_id": candidate_id, "message": "Candidate added successfully"}
+
+
+@app.post("/api/jobs/{job_id}/candidates/upload", tags=["Candidates"])
+async def upload_candidate_resume(
+    job_id: str,
+    file: UploadFile = File(...),
+    source: str = "pdf_upload",
+):
+    """
+    Upload a PDF resume for a candidate.
+    
+    Efficiently extracts text from PDF using PyMuPDF.
+    Validates file type and size before processing.
+    """
+    from uuid import uuid4
+    from ..utils.pdf_extractor import extract_text_from_pdf, validate_pdf_file
+    
+    if job_id not in jobs_db:
+        raise HTTPException(status_code=404, detail="Job not found")
+    
+    # Validate file type
+    if not file.filename:
+        raise HTTPException(status_code=400, detail="No filename provided")
+    
+    if not file.filename.lower().endswith('.pdf'):
+        raise HTTPException(
+            status_code=400, 
+            detail="Only PDF files are accepted. Please upload a .pdf file."
+        )
+    
+    # Validate content type
+    if file.content_type and file.content_type != 'application/pdf':
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid content type: {file.content_type}. Expected application/pdf"
+        )
+    
+    # Read file content (with size limit)
+    MAX_FILE_SIZE = 10 * 1024 * 1024  # 10MB
+    content = await file.read()
+    
+    if len(content) > MAX_FILE_SIZE:
+        raise HTTPException(
+            status_code=413,
+            detail=f"File too large. Maximum size is 10MB."
+        )
+    
+    # Validate PDF structure
+    is_valid, error_msg = validate_pdf_file(content)
+    if not is_valid:
+        raise HTTPException(status_code=400, detail=error_msg)
+    
+    # Extract text from PDF
+    extraction_result = extract_text_from_pdf(content)
+    
+    if not extraction_result.is_valid:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Could not extract text from PDF. {' '.join(extraction_result.warnings)}"
+        )
+    
+    # Create candidate record
+    candidate_id = uuid4().hex[:12]
+    candidates_db[candidate_id] = {
+        "candidate_id": candidate_id,
+        "job_id": job_id,
+        "resume_text": extraction_result.text,
+        "resume_format": "pdf",
+        "source": source,
+        "status": "pending",
+        "original_filename": file.filename,
+        "pdf_metadata": {
+            "page_count": extraction_result.page_count,
+            "char_count": extraction_result.char_count,
+            "extraction_method": extraction_result.extraction_method,
+            "warnings": extraction_result.warnings,
+        },
+    }
+    
+    return {
+        "candidate_id": candidate_id,
+        "message": "Resume uploaded and processed successfully",
+        "filename": file.filename,
+        "pages_processed": extraction_result.page_count,
+        "characters_extracted": extraction_result.char_count,
+        "warnings": extraction_result.warnings,
+    }
 
 
 @app.get("/api/jobs/{job_id}/candidates", tags=["Candidates"])
