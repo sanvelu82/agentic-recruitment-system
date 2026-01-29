@@ -4,9 +4,10 @@ import CandidateTable from './components/CandidateTable'
 import HumanReviewModal from './components/HumanReviewModal'
 import AuditTrailModal from './components/AuditTrailModal'
 import BiasAuditPanel from './components/BiasAuditPanel'
+import ResumeUploader from './components/ResumeUploader'
 import { mockPipelineData } from './data/mockData'
 import { healthApi, jobsApi, candidatesApi, pipelineApi, reviewApi } from './services/api'
-import { Briefcase, RefreshCw, AlertCircle, Plus, Play, Server, ServerOff } from 'lucide-react'
+import { Briefcase, RefreshCw, AlertCircle, Plus, Play, Server, ServerOff, FileText, Type } from 'lucide-react'
 
 function App() {
   const [pipelineState, setPipelineState] = useState(null)
@@ -27,6 +28,7 @@ function App() {
   const [newJob, setNewJob] = useState({ title: '', description: '', company: '' })
   const [newResume, setNewResume] = useState('')
   const [pipelineRunning, setPipelineRunning] = useState(false)
+  const [resumeInputMode, setResumeInputMode] = useState('pdf') // 'pdf' or 'text'
 
   // Check backend connection
   const checkBackendConnection = useCallback(async () => {
@@ -381,18 +383,60 @@ function App() {
               {/* Add Candidate Form */}
               {selectedJobId && (
                 <div className="border-t pt-4 mt-4">
-                  <h3 className="text-md font-medium text-gray-800 mb-3">Add Candidate Resume</h3>
-                  <div className="flex gap-4">
-                    <textarea
-                      placeholder="Paste resume text here (min 100 characters)..."
-                      value={newResume}
-                      onChange={(e) => setNewResume(e.target.value)}
-                      className="flex-1 px-3 py-2 border border-gray-300 rounded-lg h-24"
-                    />
-                    <button onClick={handleAddCandidate} className="btn-secondary self-end">
-                      Add Candidate
-                    </button>
+                  <div className="flex items-center justify-between mb-3">
+                    <h3 className="text-md font-medium text-gray-800">Add Candidate Resume</h3>
+                    
+                    {/* Toggle between PDF and Text input */}
+                    <div className="flex items-center bg-gray-100 rounded-lg p-1">
+                      <button
+                        onClick={() => setResumeInputMode('pdf')}
+                        className={`flex items-center gap-1.5 px-3 py-1.5 rounded-md text-sm font-medium transition-colors ${
+                          resumeInputMode === 'pdf'
+                            ? 'bg-white text-primary-600 shadow-sm'
+                            : 'text-gray-600 hover:text-gray-800'
+                        }`}
+                      >
+                        <FileText className="w-4 h-4" />
+                        PDF Upload
+                      </button>
+                      <button
+                        onClick={() => setResumeInputMode('text')}
+                        className={`flex items-center gap-1.5 px-3 py-1.5 rounded-md text-sm font-medium transition-colors ${
+                          resumeInputMode === 'text'
+                            ? 'bg-white text-primary-600 shadow-sm'
+                            : 'text-gray-600 hover:text-gray-800'
+                        }`}
+                      >
+                        <Type className="w-4 h-4" />
+                        Paste Text
+                      </button>
+                    </div>
                   </div>
+                  
+                  {resumeInputMode === 'pdf' ? (
+                    <ResumeUploader
+                      jobId={selectedJobId}
+                      onUploadSuccess={(result) => {
+                        console.log('Resume uploaded:', result)
+                      }}
+                      onUploadError={(error) => {
+                        console.error('Upload error:', error)
+                      }}
+                      disabled={pipelineRunning}
+                    />
+                  ) : (
+                    <div className="flex gap-4">
+                      <textarea
+                        placeholder="Paste resume text here (min 100 characters)..."
+                        value={newResume}
+                        onChange={(e) => setNewResume(e.target.value)}
+                        className="flex-1 px-3 py-2 border border-gray-300 rounded-lg h-24"
+                      />
+                      <button onClick={handleAddCandidate} className="btn-secondary self-end">
+                        Add Candidate
+                      </button>
+                    </div>
+                  )}
                 </div>
               )}
             </div>

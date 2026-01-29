@@ -82,12 +82,31 @@ export const jobsApi = {
 
 // Candidates API endpoints
 export const candidatesApi = {
-  // Add a candidate to a job
+  // Add a candidate to a job (text-based)
   addCandidate: async (jobId, candidateData) => {
     const response = await api.post(`/api/jobs/${jobId}/candidates`, {
       resume_text: candidateData.resume_text,
       resume_format: candidateData.resume_format || 'txt',
       source: candidateData.source || 'direct_application',
+    })
+    return response.data
+  },
+
+  // Upload a PDF resume for a candidate
+  uploadResume: async (jobId, file, source = 'pdf_upload', onProgress = null) => {
+    const formData = new FormData()
+    formData.append('file', file)
+    formData.append('source', source)
+
+    const response = await api.post(`/api/jobs/${jobId}/candidates/upload`, formData, {
+      headers: {
+        'Content-Type': 'multipart/form-data',
+      },
+      timeout: 60000, // 60 second timeout for uploads
+      onUploadProgress: onProgress ? (progressEvent) => {
+        const percentCompleted = Math.round((progressEvent.loaded * 100) / progressEvent.total)
+        onProgress(percentCompleted)
+      } : undefined,
     })
     return response.data
   },
