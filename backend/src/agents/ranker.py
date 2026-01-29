@@ -8,7 +8,7 @@ This agent combines all evaluation data to produce rankings.
 """
 
 from dataclasses import dataclass
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 from .base import BaseAgent
 from ..schemas.candidates import MatchResult, TestResult, FinalRanking
@@ -66,6 +66,50 @@ class RankerAgent(BaseAgent[RankerInput, RankerOutput]):
     @property
     def required_confidence_threshold(self) -> float:
         return 0.8  # Rankings need higher confidence
+    
+    def run(
+        self,
+        input_data: RankerInput,
+        state: Optional["PipelineState"] = None
+    ) -> "AgentResult[RankerOutput]":
+        """
+        Execute ranking and return result.
+        
+        Args:
+            input_data: RankerInput with all evaluation data
+            state: Optional pipeline state
+        
+        Returns:
+            AgentResult with RankerOutput and updated state
+        """
+        from ..schemas.messages import PipelineState
+        from .base import AgentResult, AgentResponse, AgentStatus
+        
+        if state is None:
+            state = PipelineState()
+        
+        try:
+            result, confidence, explanation = self._process(input_data)
+            
+            response = AgentResponse(
+                agent_name=self.name,
+                status=AgentStatus.SUCCESS,
+                output=result,
+                confidence_score=confidence,
+                explanation=explanation,
+            )
+            
+            return AgentResult(response=response, state=state)
+            
+        except Exception as e:
+            response = AgentResponse(
+                agent_name=self.name,
+                status=AgentStatus.FAILURE,
+                output=None,
+                confidence_score=0.0,
+                explanation=f"Ranking failed: {str(e)}",
+            )
+            return AgentResult(response=response, state=state)
     
     def _process(
         self, 

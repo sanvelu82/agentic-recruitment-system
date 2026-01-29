@@ -8,7 +8,7 @@ This agent does NOT rank candidates - only evaluates individual tests.
 """
 
 from dataclasses import dataclass
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 from .base import BaseAgent
 from ..schemas.candidates import TestResult, TestResponse
@@ -50,6 +50,50 @@ class TestEvaluatorAgent(BaseAgent[TestEvaluatorInput, TestResult]):
             "Evaluates candidate test responses, calculating scores with "
             "full transparency and integrity monitoring."
         )
+    
+    def run(
+        self,
+        input_data: TestEvaluatorInput,
+        state: Optional["PipelineState"] = None
+    ) -> "AgentResult[TestResult]":
+        """
+        Execute test evaluation and return result.
+        
+        Args:
+            input_data: TestEvaluatorInput with questions and responses
+            state: Optional pipeline state
+        
+        Returns:
+            AgentResult with TestResult and updated state
+        """
+        from ..schemas.messages import PipelineState
+        from .base import AgentResult, AgentResponse, AgentStatus
+        
+        if state is None:
+            state = PipelineState()
+        
+        try:
+            result, confidence, explanation = self._process(input_data)
+            
+            response = AgentResponse(
+                agent_name=self.name,
+                status=AgentStatus.SUCCESS,
+                output=result,
+                confidence_score=confidence,
+                explanation=explanation,
+            )
+            
+            return AgentResult(response=response, state=state)
+            
+        except Exception as e:
+            response = AgentResponse(
+                agent_name=self.name,
+                status=AgentStatus.FAILURE,
+                output=None,
+                confidence_score=0.0,
+                explanation=f"Test evaluation failed: {str(e)}",
+            )
+            return AgentResult(response=response, state=state)
     
     def _process(
         self, 

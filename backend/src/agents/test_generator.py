@@ -220,13 +220,27 @@ FALLBACK_QUESTIONS = {
 @dataclass
 class TestGeneratorInput:
     """Input for test generation."""
-    parsed_jd: ParsedJD
-    num_questions: int = 5
-    difficulty_distribution: Dict[str, float] = None  # e.g., {"easy": 0.3, "medium": 0.5, "hard": 0.2}
+    job_id: str = ""
+    parsed_jd: Any = None  # ParsedJD or dict
+    num_questions: int = 10
+    difficulty: str = "mixed"  # easy, medium, hard, mixed
     
     def __post_init__(self):
-        if self.difficulty_distribution is None:
-            self.difficulty_distribution = {"easy": 0.3, "medium": 0.5, "hard": 0.2}
+        if isinstance(self.parsed_jd, dict):
+            # Convert dict to ParsedJD-like object if needed
+            pass
+    
+    @property
+    def difficulty_distribution(self) -> Dict[str, float]:
+        """Calculate difficulty distribution based on difficulty setting."""
+        if self.difficulty == "easy":
+            return {"easy": 0.7, "medium": 0.3, "hard": 0.0}
+        elif self.difficulty == "medium":
+            return {"easy": 0.2, "medium": 0.6, "hard": 0.2}
+        elif self.difficulty == "hard":
+            return {"easy": 0.0, "medium": 0.3, "hard": 0.7}
+        else:  # mixed
+            return {"easy": 0.33, "medium": 0.34, "hard": 0.33}
 
 
 @dataclass
@@ -238,6 +252,11 @@ class TestGeneratorOutput:
     total_time_minutes: int
     topics_covered: List[str]
     difficulty_breakdown: Dict[str, int]
+    questions_by_category: Dict[str, List[str]] = None
+    
+    def __post_init__(self):
+        if self.questions_by_category is None:
+            self.questions_by_category = {}
 
 
 class TestGeneratorAgent(BaseAgent[TestGeneratorInput, TestGeneratorOutput]):
@@ -286,6 +305,50 @@ class TestGeneratorAgent(BaseAgent[TestGeneratorInput, TestGeneratorOutput]):
     @property
     def required_confidence_threshold(self) -> float:
         return 0.75  # Questions need review before use
+    
+    def run(
+        self,
+        input_data: TestGeneratorInput,
+        state: Optional["PipelineState"] = None
+    ) -> "AgentResult[TestGeneratorOutput]":
+        """
+        Execute test generation and return result.
+        
+        Args:
+            input_data: TestGeneratorInput with JD and parameters
+            state: Optional pipeline state
+        
+        Returns:
+            AgentResult with TestGeneratorOutput and updated state
+        """
+        from ..schemas.messages import PipelineState
+        from .base import AgentResult, AgentResponse, AgentStatus
+        
+        if state is None:
+            state = PipelineState()
+        
+        try:
+            result, confidence, explanation = self._process(input_data)
+            
+            response = AgentResponse(
+                agent_name=self.name,
+                status=AgentStatus.SUCCESS,
+                output=result,
+                confidence_score=confidence,
+                explanation=explanation,
+            )
+            
+            return AgentResult(response=response, state=state)
+            
+        except Exception as e:
+            response = AgentResponse(
+                agent_name=self.name,
+                status=AgentStatus.FAILURE,
+                output=None,
+                confidence_score=0.0,
+                explanation=f"Test generation failed: {str(e)}",
+            )
+            return AgentResult(response=response, state=state)
     
     def _process(
         self, 

@@ -8,7 +8,7 @@ This is a DECISION GATE agent - it makes pass/fail decisions with explanations.
 """
 
 from dataclasses import dataclass
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 from .base import BaseAgent
 from ..schemas.candidates import MatchResult
@@ -60,6 +60,50 @@ class ShortlisterAgent(BaseAgent[ShortlistInput, ShortlistOutput]):
     @property
     def required_confidence_threshold(self) -> float:
         return 0.8  # Higher threshold for decision-making agents
+    
+    def run(
+        self,
+        input_data: ShortlistInput,
+        state: Optional["PipelineState"] = None
+    ) -> "AgentResult[ShortlistOutput]":
+        """
+        Execute shortlisting and return result.
+        
+        Args:
+            input_data: ShortlistInput with match results and threshold
+            state: Optional pipeline state
+        
+        Returns:
+            AgentResult with ShortlistOutput and updated state
+        """
+        from ..schemas.messages import PipelineState
+        from .base import AgentResult, AgentResponse, AgentStatus
+        
+        if state is None:
+            state = PipelineState()
+        
+        try:
+            result, confidence, explanation = self._process(input_data)
+            
+            response = AgentResponse(
+                agent_name=self.name,
+                status=AgentStatus.SUCCESS,
+                output=result,
+                confidence_score=confidence,
+                explanation=explanation,
+            )
+            
+            return AgentResult(response=response, state=state)
+            
+        except Exception as e:
+            response = AgentResponse(
+                agent_name=self.name,
+                status=AgentStatus.FAILURE,
+                output=None,
+                confidence_score=0.0,
+                explanation=f"Shortlisting failed: {str(e)}",
+            )
+            return AgentResult(response=response, state=state)
     
     def _process(
         self, 
