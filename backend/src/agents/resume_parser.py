@@ -14,6 +14,7 @@ from datetime import datetime
 from typing import Any, Dict, List, Optional
 
 from .base import BaseAgent
+from ..core.llm import get_agent_decision
 from ..schemas.candidates import (
     ParsedResume,
     SkillExtraction,
@@ -29,6 +30,65 @@ try:
     LANGCHAIN_AVAILABLE = True
 except ImportError:
     LANGCHAIN_AVAILABLE = False
+
+
+RESUME_SYSTEM_PROMPT = """You are an expert Technical Recruiter and Resume Analyst with 15+ years of experience in talent acquisition.
+Your task is to meticulously parse resumes and extract structured information for candidate evaluation.
+
+CRITICAL PRIVACY REQUIREMENTS:
+- DO NOT extract or include any personally identifiable information (PII)
+- DO NOT include names, email addresses, phone numbers, or physical addresses
+- Anonymize company names and institution names
+
+You MUST return a JSON object with this EXACT schema:
+{
+    "summary": "Professional summary in 2-3 sentences describing the candidate's profile",
+    "skills": [
+        {
+            "name": "skill name",
+            "category": "technical|soft|domain",
+            "proficiency": "beginner|intermediate|advanced|expert",
+            "evidence": "brief quote or context from resume supporting this skill",
+            "confidence": 0.0 to 1.0
+        }
+    ],
+    "experience": [
+        {
+            "role": "job title",
+            "duration_months": number (estimated months in role),
+            "responsibilities": ["key responsibility 1", "key responsibility 2"],
+            "achievements": ["quantifiable achievement 1", "achievement 2"],
+            "skills_used": ["skill1", "skill2"]
+        }
+    ],
+    "education": [
+        {
+            "degree": "Bachelor's|Master's|PhD|Associate|High School",
+            "field": "field of study",
+            "graduation_year": year or null,
+            "gpa": number or null,
+            "coursework": ["relevant course 1", "course 2"]
+        }
+    ],
+    "certifications": ["certification 1", "certification 2"],
+    "projects": [
+        {
+            "name": "project name",
+            "description": "brief description",
+            "technologies": ["tech1", "tech2"]
+        }
+    ],
+    "confidence": 0.0 to 1.0
+}
+
+Guidelines:
+1. Extract ALL technical skills (programming languages, frameworks, tools, platforms)
+2. Identify soft skills (leadership, communication, teamwork)
+3. Estimate duration_months based on date ranges (use 12 months if only years given)
+4. Infer proficiency from context: 'expert' for 5+ years, 'advanced' for 3-5 years, 'intermediate' for 1-3 years
+5. Set confidence based on how clearly the resume presents information
+6. Focus on quantifiable achievements when available
+"""
 
 
 # Common skill categories for classification
@@ -76,6 +136,9 @@ class ResumeParserAgent(BaseAgent[Dict[str, Any], ParsedResume]):
     - Compare to job descriptions
     """
     
+    # Class attributes required by BaseAgent
+    name: str = "resume_parser"""
+    
     @property
     def description(self) -> str:
         return (
@@ -112,6 +175,9 @@ class ResumeParserAgent(BaseAgent[Dict[str, Any], ParsedResume]):
         """
         Execute resume parsing and return result.
         
+        Uses get_agent_decision utility to extract resume details via LLM,
+        then maps the response to a ParsedResume schema.
+        
         Args:
             input_data: Dict with candidate_id, resume_text, resume_format
             state: Optional pipeline state (created if not provided)
@@ -127,7 +193,39 @@ class ResumeParserAgent(BaseAgent[Dict[str, Any], ParsedResume]):
             state = PipelineState()
         
         try:
-            parsed, confidence, explanation = self._process(input_data)
+            candidate_id = input_data.get("candidate_id", "")
+            resume_text = input_data.get("resume_text", "")
+            
+            if not resume_text:
+                raise ValueError("No resume text provided")
+            
+            self.log_reasoning("Starting resume parsing with LLM")
+            self.log_reasoning(f"Processing resume for candidate {candidate_id[:8]}...")
+            self.log_reasoning(f"Resume length: {len(resume_text)} characters")
+            
+            # Build user payload for LLM (limit to 8k chars for token limits)
+            user_payload = f"""Parse this resume and extract structured information:
+
+{resume_text[:8000]}"""
+            
+            # Call LLM using the utility function
+            llm_response = get_agent_decision(RESUME_SYSTEM_PROMPT, user_payload)
+            self.log_reasoning("LLM extraction successful")
+            
+            # Parse LLM response and map to schema
+            extracted_data = json.loads(llm_response)
+            parsed = self._map_to_schema(candidate_id, extracted_data, resume_text)
+            
+            confidence = parsed.parsing_confidence
+            explanation = (
+                f"Parsed resume for candidate {candidate_id[:8]}. "
+                f"Extracted {len(parsed.skills)} skills, {len(parsed.experience)} experience entries, "
+                f"and {len(parsed.education)} education entries. "
+                f"Total experience: {parsed.total_experience_months // 12} years {parsed.total_experience_months % 12} months. "
+                f"Quality score: {parsed.resume_quality_score:.2f}."
+            )
+            
+            self.log_reasoning(f"Resume parsing completed: {explanation}")
             
             response = AgentResponse(
                 agent_name=self.name,
@@ -140,6 +238,7 @@ class ResumeParserAgent(BaseAgent[Dict[str, Any], ParsedResume]):
             return AgentResult(response=response, state=state)
             
         except Exception as e:
+            self.log_reasoning(f"Resume parsing failed: {str(e)}")
             response = AgentResponse(
                 agent_name=self.name,
                 status=AgentStatus.FAILURE,
@@ -148,6 +247,82 @@ class ResumeParserAgent(BaseAgent[Dict[str, Any], ParsedResume]):
                 explanation=f"Resume parsing failed: {str(e)}",
             )
             return AgentResult(response=response, state=state)
+    
+    def _map_to_schema(
+        self,
+        candidate_id: str,
+        extracted_data: Dict[str, Any],
+        resume_text: str
+    ) -> ParsedResume:
+        """
+        Map LLM's JSON output to ParsedResume schema.
+        
+        Args:
+            candidate_id: Unique identifier for the candidate
+            extracted_data: Parsed JSON from LLM response
+            resume_text: Original resume text for quality scoring
+        
+        Returns:
+            ParsedResume object with all fields populated
+        """
+        # Build skill extractions
+        skills = []
+        for skill_data in extracted_data.get("skills", []):
+            skill = SkillExtraction(
+                skill_name=skill_data.get("name", ""),
+                category=skill_data.get("category", "technical"),
+                proficiency_level=skill_data.get("proficiency", "intermediate"),
+                evidence=skill_data.get("evidence", ""),
+                confidence=skill_data.get("confidence", 0.7),
+            )
+            skills.append(skill)
+        
+        # Build experience entries
+        experience = []
+        total_months = 0
+        for idx, exp_data in enumerate(extracted_data.get("experience", [])):
+            months = exp_data.get("duration_months", 0)
+            total_months += months
+            exp = ExperienceEntry(
+                company_anonymized=f"Company_{idx + 1}",  # Anonymize
+                role=exp_data.get("role", ""),
+                duration_months=months,
+                responsibilities=exp_data.get("responsibilities", []),
+                achievements=exp_data.get("achievements", []),
+                skills_used=exp_data.get("skills_used", []),
+            )
+            experience.append(exp)
+        
+        # Build education entries
+        education = []
+        for idx, edu_data in enumerate(extracted_data.get("education", [])):
+            edu = EducationEntry(
+                degree=edu_data.get("degree", ""),
+                field_of_study=edu_data.get("field", ""),
+                institution_anonymized=f"Institution_{idx + 1}",  # Anonymize
+                graduation_year=edu_data.get("graduation_year"),
+                gpa=edu_data.get("gpa"),
+                relevant_coursework=edu_data.get("coursework", []),
+            )
+            education.append(edu)
+        
+        # Calculate quality score
+        quality_score = self._calculate_quality_score(extracted_data, resume_text)
+        
+        return ParsedResume(
+            candidate_id=candidate_id,
+            parsing_confidence=extracted_data.get("confidence", 0.7),
+            professional_summary=extracted_data.get("summary", ""),
+            skills=skills,
+            experience=experience,
+            education=education,
+            certifications=extracted_data.get("certifications", []),
+            projects=extracted_data.get("projects", []),
+            total_experience_months=total_months,
+            unique_skills_count=len(skills),
+            resume_quality_score=quality_score,
+            parsing_warnings=[],
+        )
 
     def _process(
         self, 

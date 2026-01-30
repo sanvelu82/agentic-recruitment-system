@@ -13,6 +13,7 @@ import re
 from typing import Any, Dict, List, Optional
 
 from .base import BaseAgent
+from ..core.llm import get_agent_decision
 from ..schemas.job import (
     JobDescription,
     ParsedJD,
@@ -30,7 +31,49 @@ try:
 except ImportError:
     LANGCHAIN_AVAILABLE = False
 
+JD_SYSTEM_PROMPT = """You are an expert Technical Recruiter and HR Analyst with 15+ years of experience in talent acquisition.
+Your task is to meticulously analyze job descriptions and extract structured information.
 
+You MUST return a JSON object with this EXACT schema:
+{
+    "normalized_title": "standardized job title (e.g., 'Senior Software Engineer')",
+    "seniority_level": "entry|junior|mid|senior|lead|principal|executive",
+    "job_function": "engineering|data_science|product|design|marketing|sales|hr|finance|operations|other",
+    "skills": [
+        {
+            "name": "skill name",
+            "category": "technical|soft|domain",
+            "importance": "required|preferred|nice_to_have",
+            "proficiency": "beginner|intermediate|advanced|expert",
+            "years": null or number,
+            "context": "how the skill will be used"
+        }
+    ],
+    "experience": {
+        "minimum_years": number,
+        "preferred_years": number or null,
+        "domains": ["relevant industry/domain"],
+        "roles": ["relevant previous roles"]
+    },
+    "education": {
+        "minimum_degree": "high_school|associate|bachelors|masters|phd|none",
+        "preferred_degree": "degree or null",
+        "fields": ["accepted fields of study"],
+        "certifications_required": ["required certifications"],
+        "certifications_preferred": ["preferred certifications"]
+    },
+    "responsibilities": ["key responsibility 1", "key responsibility 2"],
+    "technical_topics": ["topic for technical assessment"],
+    "confidence": 0.0 to 1.0
+}
+
+Guidelines:
+1. Extract ALL technical skills (languages, frameworks, tools, platforms)
+2. Identify soft skills (communication, leadership, teamwork)
+3. Be specific with technical topics for assessment (e.g., "Python data structures", "REST API design")
+4. Infer seniority from years of experience and responsibilities if not explicit
+5. Set confidence based on how clearly the JD specifies requirements
+"""
 # Comprehensive bias term dictionaries
 GENDERED_TERMS = {
     # Masculine-coded terms
@@ -105,6 +148,9 @@ class JDAnalyzerAgent(BaseAgent[JobDescription, ParsedJD]):
     - Generate tests
     """
     
+    # Class attributes required by BaseAgent
+    name: str = "jd_analyzer"
+    
     def __init__(self, agent_id: Optional[str] = None, model: str = "llama-3.3-70b-versatile"):
         super().__init__(agent_id)
         self.model_name = model
@@ -137,6 +183,9 @@ class JDAnalyzerAgent(BaseAgent[JobDescription, ParsedJD]):
         """
         Execute JD analysis and return result.
         
+        Uses get_agent_decision utility to extract JD details via LLM,
+        then maps the response to a ParsedJD schema.
+        
         Args:
             input_data: JobDescription to analyze
             state: Optional pipeline state (created if not provided)
@@ -152,7 +201,52 @@ class JDAnalyzerAgent(BaseAgent[JobDescription, ParsedJD]):
             state = PipelineState(job_id=input_data.job_id)
         
         try:
-            parsed, confidence, explanation = self._process(input_data)
+            self.log_reasoning("Starting JD analysis with LLM")
+            self.log_reasoning(f"Analyzing job: {input_data.title}")
+            
+            # Check for potential bias in JD
+            bias_flags = self._check_for_bias(input_data.raw_description)
+            if bias_flags:
+                self.log_reasoning(f"Potential bias detected: {len(bias_flags)} issues found")
+            
+            # Build user payload for LLM
+            user_payload = f"""Analyze this job description and extract structured information:
+
+Job Title: {input_data.title}
+Department: {input_data.department}
+Location: {input_data.location}
+Employment Type: {input_data.employment_type}
+Experience Range: {input_data.experience_years_min}-{input_data.experience_years_max} years
+
+Job Description:
+{input_data.raw_description}"""
+            
+            # Call LLM using the utility function
+            llm_response = get_agent_decision(JD_SYSTEM_PROMPT, user_payload)
+            self.log_reasoning("LLM extraction successful")
+            
+            # Parse LLM response and map to schema
+            extracted_data = json.loads(llm_response)
+            parsed = self._map_to_schema(input_data, extracted_data, bias_flags)
+            
+            # Calculate quality score
+            jd_quality_score = self._calculate_jd_quality(input_data, extracted_data, bias_flags)
+            parsed.jd_quality_score = jd_quality_score
+            
+            confidence = parsed.parsing_confidence
+            explanation = (
+                f"Analyzed job description for '{input_data.title}'. "
+                f"Extracted {len(parsed.skills)} skill requirements "
+                f"({len(parsed.get_required_skills())} required, "
+                f"{len(parsed.get_preferred_skills())} preferred), "
+                f"experience requirements ({parsed.experience_requirements.minimum_years}+ years), "
+                f"education requirements ({parsed.education_requirements.minimum_degree}), "
+                f"and {len(parsed.technical_topics)} technical topics for assessment. "
+                f"JD quality score: {jd_quality_score:.0%}. "
+                f"Identified {len(bias_flags)} potential bias concerns."
+            )
+            
+            self.log_reasoning("JD analysis completed")
             
             response = AgentResponse(
                 agent_name=self.name,
@@ -175,6 +269,7 @@ class JDAnalyzerAgent(BaseAgent[JobDescription, ParsedJD]):
             return AgentResult(response=response, state=new_state)
             
         except Exception as e:
+            self.log_reasoning(f"JD analysis failed: {str(e)}")
             response = AgentResponse(
                 agent_name=self.name,
                 status=AgentStatus.FAILURE,
@@ -183,6 +278,84 @@ class JDAnalyzerAgent(BaseAgent[JobDescription, ParsedJD]):
                 explanation=f"JD analysis failed: {str(e)}",
             )
             return AgentResult(response=response, state=state)
+    
+    def _map_to_schema(
+        self,
+        input_data: JobDescription,
+        extracted_data: Dict[str, Any],
+        bias_flags: List[str]
+    ) -> ParsedJD:
+        """
+        Map LLM's JSON output to ParsedJD schema.
+        
+        Args:
+            input_data: Original JobDescription
+            extracted_data: Parsed JSON from LLM response
+            bias_flags: List of detected bias issues
+        
+        Returns:
+            ParsedJD object with all fields populated
+        """
+        # Build skill requirements
+        skills = []
+        for skill_data in extracted_data.get("skills", []):
+            skill = SkillRequirement(
+                skill_name=skill_data.get("name", ""),
+                category=skill_data.get("category", "technical"),
+                importance=skill_data.get("importance", "required"),
+                minimum_proficiency=skill_data.get("proficiency", "intermediate"),
+                years_experience=skill_data.get("years"),
+                context=skill_data.get("context", ""),
+            )
+            skills.append(skill)
+        
+        # Build experience requirements
+        exp_data = extracted_data.get("experience", {})
+        experience_req = ExperienceRequirement(
+            minimum_years=exp_data.get("minimum_years", 0),
+            preferred_years=exp_data.get("preferred_years"),
+            relevant_domains=exp_data.get("domains", []),
+            specific_roles=exp_data.get("roles", []),
+        )
+        
+        # Build education requirements
+        edu_data = extracted_data.get("education", {})
+        education_req = EducationRequirement(
+            minimum_degree=edu_data.get("minimum_degree", ""),
+            preferred_degree=edu_data.get("preferred_degree"),
+            accepted_fields=edu_data.get("fields", []),
+            certifications_required=edu_data.get("certifications_required", []),
+            certifications_preferred=edu_data.get("certifications_preferred", []),
+        )
+        
+        # Determine difficulty level from seniority
+        seniority = extracted_data.get("seniority_level", "mid")
+        difficulty_map = {
+            "entry": "beginner",
+            "junior": "beginner",
+            "mid": "intermediate",
+            "senior": "advanced",
+            "lead": "advanced",
+            "principal": "advanced",
+            "executive": "advanced",
+        }
+        difficulty_level = difficulty_map.get(seniority, "intermediate")
+        
+        return ParsedJD(
+            job_id=input_data.job_id,
+            parsing_confidence=extracted_data.get("confidence", 0.85),
+            job_title_normalized=extracted_data.get("normalized_title", input_data.title),
+            seniority_level=seniority,
+            job_function=extracted_data.get("job_function", "engineering"),
+            skills=skills,
+            experience_requirements=experience_req,
+            education_requirements=education_req,
+            key_responsibilities=extracted_data.get("responsibilities", []),
+            technical_topics=extracted_data.get("technical_topics", []),
+            difficulty_level=difficulty_level,
+            potential_bias_flags=bias_flags,
+            parsing_warnings=[],
+        )
     
     def _process(
         self, 

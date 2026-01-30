@@ -10,208 +10,273 @@ import {
   CheckCircle2,
   Clock,
   AlertCircle,
-  XCircle
+  XCircle,
+  Loader2,
+  Brain,
+  Sparkles
 } from 'lucide-react'
 
-// Pipeline stages configuration
+// Pipeline stages configuration with agent names
 const PIPELINE_STAGES = [
   { 
     id: 'initialized', 
-    label: 'Initialized', 
+    label: 'Pipeline Initialized', 
+    agent: 'System',
     icon: Clock,
-    description: 'Pipeline created'
+    description: 'Setting up recruitment pipeline'
   },
   { 
     id: 'jd_analysis', 
-    label: 'JD Analysis', 
+    label: 'Analyzing Job Description', 
+    agent: 'JD Analyzer',
     icon: FileText,
-    description: 'Analyzing job description'
+    description: 'Extracting requirements, skills, and qualifications'
   },
   { 
     id: 'resume_parsing', 
-    label: 'Resume Parsing', 
+    label: 'Parsing Resumes', 
+    agent: 'Resume Parser',
     icon: Users,
-    description: 'Extracting candidate data'
+    description: 'Extracting candidate information and skills'
   },
   { 
     id: 'matching', 
-    label: 'Matching', 
+    label: 'Matching Candidates', 
+    agent: 'Matcher Agent',
     icon: GitCompare,
-    description: 'Calculating match scores'
+    description: 'Calculating match scores against job requirements'
   },
   { 
     id: 'shortlisting', 
     label: 'Shortlisting', 
+    agent: 'Shortlister',
     icon: Filter,
-    description: 'Filtering candidates'
+    description: 'Filtering top candidates based on match scores'
   },
   { 
     id: 'test_generation', 
-    label: 'Test Generation', 
+    label: 'Generating Tests', 
+    agent: 'Test Generator',
     icon: FileQuestion,
-    description: 'Creating assessments'
+    description: 'Creating technical assessment questions'
   },
   { 
     id: 'test_evaluation', 
-    label: 'Test Evaluation', 
+    label: 'Evaluating Tests', 
+    agent: 'Test Evaluator',
     icon: ClipboardCheck,
-    description: 'Scoring responses'
+    description: 'Scoring candidate responses'
   },
   { 
     id: 'ranking', 
-    label: 'Ranking', 
+    label: 'Ranking Candidates', 
+    agent: 'Ranker Agent',
     icon: Trophy,
-    description: 'Final rankings'
+    description: 'Generating final candidate rankings'
   },
   { 
     id: 'bias_audit', 
-    label: 'Bias Audit', 
+    label: 'Auditing for Bias', 
+    agent: 'Bias Auditor',
     icon: Shield,
-    description: 'Fairness review'
+    description: 'Ensuring fairness and compliance'
   },
 ]
 
-// Special terminal states
+// Terminal states
 const TERMINAL_STATES = {
-  completed: { label: 'Completed', color: 'green', icon: CheckCircle2 },
-  failed: { label: 'Failed', color: 'red', icon: XCircle },
-  awaiting_human_review: { label: 'Awaiting Review', color: 'amber', icon: AlertCircle },
+  completed: { 
+    label: 'Pipeline Completed', 
+    color: 'emerald', 
+    icon: CheckCircle2,
+    description: 'All stages completed successfully'
+  },
+  failed: { 
+    label: 'Pipeline Failed', 
+    color: 'red', 
+    icon: XCircle,
+    description: 'An error occurred during processing'
+  },
+  awaiting_human_review: { 
+    label: 'Awaiting Human Review', 
+    color: 'amber', 
+    icon: AlertCircle,
+    description: 'Manual review required before proceeding'
+  },
 }
 
-function PipelineStepper({ currentStage, stages = [] }) {
-  // Find current stage index
+function PipelineStepper({ currentStage, stages = [], errorReason = null }) {
   const currentIndex = PIPELINE_STAGES.findIndex(s => s.id === currentStage)
   const isTerminalState = currentStage in TERMINAL_STATES
+  const terminalInfo = TERMINAL_STATES[currentStage]
 
   const getStageStatus = (stage, index) => {
-    if (isTerminalState) {
-      // All stages before terminal state are completed
-      if (index < PIPELINE_STAGES.length) {
-        return stages.includes(stage.id) ? 'completed' : 'pending'
-      }
-    }
-    
+    if (stages.includes(stage.id)) return 'completed'
+    if (stage.id === currentStage && !isTerminalState) return 'current'
     if (index < currentIndex) return 'completed'
-    if (index === currentIndex) return 'current'
     return 'pending'
   }
 
-  const getStatusStyles = (status) => {
-    switch (status) {
-      case 'completed':
-        return {
-          circle: 'bg-green-500 text-white border-green-500',
-          line: 'bg-green-500',
-          label: 'text-green-700',
-          icon: 'text-white',
-        }
-      case 'current':
-        return {
-          circle: 'bg-primary-500 text-white border-primary-500 ring-4 ring-primary-100',
-          line: 'bg-gray-200',
-          label: 'text-primary-700 font-semibold',
-          icon: 'text-white',
-        }
-      default:
-        return {
-          circle: 'bg-gray-100 text-gray-400 border-gray-300',
-          line: 'bg-gray-200',
-          label: 'text-gray-500',
-          icon: 'text-gray-400',
-        }
-    }
-  }
-
   return (
-    <div className="w-full">
-      {/* Desktop view */}
-      <div className="hidden lg:block">
-        <div className="flex items-start justify-between">
-          {PIPELINE_STAGES.map((stage, index) => {
-            const status = getStageStatus(stage, index)
-            const styles = getStatusStyles(status)
-            const Icon = status === 'completed' ? CheckCircle2 : stage.icon
-
-            return (
-              <div key={stage.id} className="flex-1 relative">
-                {/* Connector line */}
-                {index < PIPELINE_STAGES.length - 1 && (
-                  <div 
-                    className={`absolute top-5 left-1/2 w-full h-0.5 ${
-                      status === 'completed' ? 'bg-green-500' : 'bg-gray-200'
-                    }`}
-                  />
-                )}
-                
-                {/* Stage circle and label */}
-                <div className="flex flex-col items-center relative z-10">
-                  <div 
-                    className={`w-10 h-10 rounded-full border-2 flex items-center justify-center transition-all duration-300 ${styles.circle}`}
-                  >
-                    <Icon className={`w-5 h-5 ${styles.icon}`} />
-                  </div>
-                  <span className={`mt-2 text-xs text-center max-w-[80px] ${styles.label}`}>
-                    {stage.label}
-                  </span>
-                </div>
-              </div>
-            )
-          })}
+    <div className="glass-card p-6">
+      <div className="flex items-center gap-3 mb-6">
+        <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-indigo-600 to-indigo-400 flex items-center justify-center">
+          <Brain className="w-5 h-5 text-white" />
+        </div>
+        <div>
+          <h3 className="text-lg font-semibold text-white">Live Agent Activity</h3>
+          <p className="text-sm text-surface-400">Real-time pipeline execution log</p>
         </div>
       </div>
 
-      {/* Mobile/Tablet view */}
-      <div className="lg:hidden">
-        <div className="space-y-4">
-          {PIPELINE_STAGES.map((stage, index) => {
-            const status = getStageStatus(stage, index)
-            const styles = getStatusStyles(status)
-            const Icon = status === 'completed' ? CheckCircle2 : stage.icon
-
-            return (
-              <div key={stage.id} className="flex items-center gap-4">
-                <div 
-                  className={`w-10 h-10 rounded-full border-2 flex items-center justify-center flex-shrink-0 ${styles.circle}`}
-                >
-                  <Icon className={`w-5 h-5 ${styles.icon}`} />
-                </div>
-                <div className="flex-1">
-                  <p className={`text-sm font-medium ${styles.label}`}>{stage.label}</p>
-                  <p className="text-xs text-gray-500">{stage.description}</p>
-                </div>
-                {status === 'current' && (
-                  <span className="px-2 py-1 text-xs font-medium bg-primary-100 text-primary-700 rounded-full animate-pulse">
-                    In Progress
-                  </span>
-                )}
-              </div>
-            )
-          })}
-        </div>
-      </div>
-
-      {/* Terminal state indicator */}
+      {/* Terminal State Banner */}
       {isTerminalState && (
-        <div className={`mt-6 p-4 rounded-lg border ${
-          currentStage === 'completed' 
-            ? 'bg-green-50 border-green-200' 
+        <div className={`
+          mb-6 p-4 rounded-xl border
+          ${currentStage === 'completed' 
+            ? 'bg-emerald-500/10 border-emerald-500/30' 
             : currentStage === 'failed'
-            ? 'bg-red-50 border-red-200'
-            : 'bg-amber-50 border-amber-200'
-        }`}>
+            ? 'bg-red-500/10 border-red-500/30'
+            : 'bg-amber-500/10 border-amber-500/30'
+          }
+        `}>
           <div className="flex items-center gap-3">
-            {currentStage === 'completed' && <CheckCircle2 className="w-5 h-5 text-green-600" />}
-            {currentStage === 'failed' && <XCircle className="w-5 h-5 text-red-600" />}
-            {currentStage === 'awaiting_human_review' && <AlertCircle className="w-5 h-5 text-amber-600" />}
-            <span className={`font-medium ${
-              currentStage === 'completed' ? 'text-green-700' :
-              currentStage === 'failed' ? 'text-red-700' : 'text-amber-700'
-            }`}>
-              {TERMINAL_STATES[currentStage]?.label}
-            </span>
+            {terminalInfo && (
+              <>
+                <terminalInfo.icon className={`w-6 h-6 ${
+                  currentStage === 'completed' ? 'text-emerald-400' :
+                  currentStage === 'failed' ? 'text-red-400' : 'text-amber-400'
+                }`} />
+                <div>
+                  <p className={`font-semibold ${
+                    currentStage === 'completed' ? 'text-emerald-400' :
+                    currentStage === 'failed' ? 'text-red-400' : 'text-amber-400'
+                  }`}>
+                    {terminalInfo.label}
+                  </p>
+                  <p className="text-sm text-surface-400">{terminalInfo.description}</p>
+                </div>
+              </>
+            )}
           </div>
+          
+          {/* Error Reason */}
+          {currentStage === 'failed' && errorReason && (
+            <div className="mt-3 p-3 rounded-lg bg-red-500/10 border border-red-500/20">
+              <p className="text-sm text-red-300">
+                <span className="font-semibold">Error: </span>
+                {errorReason}
+              </p>
+            </div>
+          )}
         </div>
       )}
+
+      {/* Agent Log */}
+      <div className="space-y-1">
+        {PIPELINE_STAGES.map((stage, index) => {
+          const status = getStageStatus(stage, index)
+          const Icon = stage.icon
+          const isActive = status === 'current'
+          const isCompleted = status === 'completed'
+          const isPending = status === 'pending'
+
+          return (
+            <div key={stage.id} className="relative">
+              {/* Connector Line */}
+              {index < PIPELINE_STAGES.length - 1 && (
+                <div 
+                  className={`
+                    absolute left-5 top-12 w-0.5 h-8
+                    ${isCompleted ? 'bg-emerald-500' : 'bg-surface-700'}
+                  `}
+                />
+              )}
+
+              <div 
+                className={`
+                  flex items-start gap-4 p-3 rounded-xl
+                  transition-all duration-300
+                  ${isActive ? 'bg-indigo-500/10 border border-indigo-500/30' : ''}
+                  ${isCompleted ? 'opacity-100' : ''}
+                  ${isPending ? 'opacity-50' : ''}
+                `}
+              >
+                {/* Status Icon */}
+                <div className={`
+                  relative flex-shrink-0 w-10 h-10 rounded-xl
+                  flex items-center justify-center
+                  transition-all duration-300
+                  ${isCompleted 
+                    ? 'bg-emerald-500/20 text-emerald-400' 
+                    : isActive 
+                    ? 'bg-indigo-500/20 text-indigo-400' 
+                    : 'bg-surface-800 text-surface-500'
+                  }
+                `}>
+                  {isActive ? (
+                    <Loader2 className="w-5 h-5 animate-spin" />
+                  ) : isCompleted ? (
+                    <CheckCircle2 className="w-5 h-5" />
+                  ) : (
+                    <Icon className="w-5 h-5" />
+                  )}
+                  
+                  {/* Pulse ring for active */}
+                  {isActive && (
+                    <div className="absolute inset-0 rounded-xl bg-indigo-500/20 animate-ping" />
+                  )}
+                </div>
+
+                {/* Stage Info */}
+                <div className="flex-1 min-w-0">
+                  <div className="flex items-center gap-2 mb-0.5">
+                    <span className={`
+                      text-sm font-semibold
+                      ${isCompleted ? 'text-emerald-400' : isActive ? 'text-white' : 'text-surface-500'}
+                    `}>
+                      {stage.label}
+                    </span>
+                    
+                    {isActive && (
+                      <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-indigo-500/20 text-indigo-400 animate-pulse">
+                        <Sparkles className="w-3 h-3" />
+                        Active
+                      </span>
+                    )}
+                  </div>
+
+                  <p className={`
+                    text-xs
+                    ${isActive ? 'text-surface-300' : 'text-surface-500'}
+                  `}>
+                    {isActive ? (
+                      <span className="flex items-center gap-1">
+                        <span className="font-medium text-indigo-400">{stage.agent}</span>
+                        <span>is thinking...</span>
+                      </span>
+                    ) : isCompleted ? (
+                      <span className="flex items-center gap-1">
+                        <span className="text-emerald-400">{stage.agent}</span>
+                        <span>completed</span>
+                      </span>
+                    ) : (
+                      stage.description
+                    )}
+                  </p>
+                </div>
+
+                {/* Timestamp placeholder for completed */}
+                {isCompleted && (
+                  <span className="text-xs text-surface-500 flex-shrink-0">
+                    ✓
+                  </span>
+                )}
+              </div>
+            </div>
+          )
+        })}
+      </div>
     </div>
   )
 }

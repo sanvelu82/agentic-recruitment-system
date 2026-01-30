@@ -1,6 +1,6 @@
 import axios from 'axios'
 
-// API Base URL - defaults to local backend
+// API Base URL - connects to localhost:8000
 const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000'
 
 // Create axios instance with default config
@@ -9,40 +9,39 @@ const api = axios.create({
   headers: {
     'Content-Type': 'application/json',
   },
-  timeout: 30000, // 30 second timeout for long operations
+  timeout: 60000, // 60 second timeout for long operations
 })
 
-// Request interceptor for adding auth tokens, etc.
+// Request interceptor for adding auth tokens
 api.interceptors.request.use(
   (config) => {
-    // Add auth token if available
     const token = localStorage.getItem('auth_token')
     if (token) {
       config.headers.Authorization = `Bearer ${token}`
     }
     return config
   },
-  (error) => {
-    return Promise.reject(error)
-  }
+  (error) => Promise.reject(error)
 )
 
 // Response interceptor for handling errors
 api.interceptors.response.use(
   (response) => response,
   (error) => {
-    if (error.response?.status === 401) {
-      // Handle unauthorized
-      console.error('Unauthorized access')
-    }
-    if (error.code === 'ECONNABORTED') {
-      console.error('Request timeout')
-    }
-    return Promise.reject(error)
+    const errorMessage = error.response?.data?.detail || error.message || 'An error occurred'
+    
+    // Create standardized error object
+    const standardError = new Error(errorMessage)
+    standardError.status = error.response?.status
+    standardError.data = error.response?.data
+    standardError.isNetworkError = !error.response
+    standardError.isTimeout = error.code === 'ECONNABORTED'
+    
+    return Promise.reject(standardError)
   }
 )
 
-// Health check
+// ============ Health API ============
 export const healthApi = {
   check: async () => {
     const response = await api.get('/health')
@@ -50,21 +49,18 @@ export const healthApi = {
   },
 }
 
-// Jobs API endpoints
+// ============ Jobs API ============
 export const jobsApi = {
-  // Get all jobs
   getJobs: async () => {
     const response = await api.get('/api/jobs')
     return response.data
   },
 
-  // Get job by ID
   getJobById: async (jobId) => {
     const response = await api.get(`/api/jobs/${jobId}`)
     return response.data
   },
 
-  // Create new job
   createJob: async (jobData) => {
     const response = await api.post('/api/jobs', {
       title: jobData.title,
@@ -78,11 +74,15 @@ export const jobsApi = {
     })
     return response.data
   },
+
+  deleteJob: async (jobId) => {
+    const response = await api.delete(`/api/jobs/${jobId}`)
+    return response.data
+  },
 }
 
-// Candidates API endpoints
+// ============ Candidates API ============
 export const candidatesApi = {
-  // Add a candidate to a job
   addCandidate: async (jobId, candidateData) => {
     const response = await api.post(`/api/jobs/${jobId}/candidates`, {
       resume_text: candidateData.resume_text,
@@ -92,22 +92,19 @@ export const candidatesApi = {
     return response.data
   },
 
-  // Get all candidates for a job
   getCandidates: async (jobId) => {
     const response = await api.get(`/api/jobs/${jobId}/candidates`)
     return response.data
   },
 
-  // Get candidate details from pipeline
   getCandidateDetails: async (pipelineId, candidateId) => {
     const response = await api.get(`/api/pipelines/${pipelineId}/candidate/${candidateId}`)
     return response.data
   },
 }
 
-// Pipeline API endpoints
+// ============ Pipeline API ============
 export const pipelineApi = {
-  // Create a new pipeline
   createPipeline: async (jobId, candidateIds = [], config = {}) => {
     const response = await api.post('/api/pipelines', {
       job_id: jobId,
@@ -123,34 +120,41 @@ export const pipelineApi = {
     return response.data
   },
 
-  // Run a pipeline
   runPipeline: async (pipelineId) => {
     const response = await api.post(`/api/pipelines/${pipelineId}/run`)
     return response.data
   },
 
-  // Get pipeline status
   getPipeline: async (pipelineId) => {
     const response = await api.get(`/api/pipelines/${pipelineId}`)
     return response.data
   },
 
-  // Get pipeline audit log
+  // Get pipeline status for polling
+  getStatus: async (pipelineId) => {
+    const response = await api.get(`/api/pipelines/${pipelineId}/status`)
+    return response.data
+  },
+
   getAuditLog: async (pipelineId) => {
     const response = await api.get(`/api/pipelines/${pipelineId}/audit`)
     return response.data
   },
 
-  // Get pipeline results
   getResults: async (pipelineId) => {
     const response = await api.get(`/api/pipelines/${pipelineId}/results`)
     return response.data
   },
+
+  // List all pipelines
+  listPipelines: async () => {
+    const response = await api.get('/api/pipelines')
+    return response.data
+  },
 }
 
-// Test API endpoints
+// ============ Test API ============
 export const testApi = {
-  // Get test questions for a candidate
   getQuestions: async (pipelineId, candidateId) => {
     const response = await api.get(`/api/pipelines/${pipelineId}/test`, {
       params: { candidate_id: candidateId },
@@ -158,7 +162,6 @@ export const testApi = {
     return response.data
   },
 
-  // Submit test responses
   submitTest: async (pipelineId, candidateId, responses) => {
     const response = await api.post(`/api/pipelines/${pipelineId}/test/submit`, {
       candidate_id: candidateId,
@@ -169,9 +172,8 @@ export const testApi = {
   },
 }
 
-// Human Review API endpoints
+// ============ Review API ============
 export const reviewApi = {
-  // Submit human review decision
   submitReview: async (pipelineId, approved, notes = '', reviewer = 'anonymous') => {
     const response = await api.post(`/api/pipelines/${pipelineId}/review`, {
       pipeline_id: pipelineId,
@@ -183,16 +185,81 @@ export const reviewApi = {
   },
 }
 
-// Bias Audit API endpoints (via pipeline)
+// ============ Bias Audit API ============
 export const biasApi = {
-  // Get audit results from pipeline results
   getAuditResults: async (pipelineId) => {
     const results = await pipelineApi.getResults(pipelineId)
     return results.bias_audit || {}
   },
 }
 
-// Combined API for easier imports
+// ============ Polling Service ============
+export class PipelinePoller {
+  constructor(pipelineId, callbacks = {}) {
+    this.pipelineId = pipelineId
+    this.interval = null
+    this.pollRate = 2000 // 2 seconds
+    this.callbacks = {
+      onStatusChange: callbacks.onStatusChange || (() => {}),
+      onAwaitingReview: callbacks.onAwaitingReview || (() => {}),
+      onCompleted: callbacks.onCompleted || (() => {}),
+      onFailed: callbacks.onFailed || (() => {}),
+      onError: callbacks.onError || (() => {}),
+    }
+    this.lastStatus = null
+  }
+
+  start() {
+    this.stop() // Clear any existing interval
+    this.poll() // Initial poll
+    this.interval = setInterval(() => this.poll(), this.pollRate)
+  }
+
+  stop() {
+    if (this.interval) {
+      clearInterval(this.interval)
+      this.interval = null
+    }
+  }
+
+  async poll() {
+    try {
+      const data = await pipelineApi.getPipeline(this.pipelineId)
+      const status = data.state?.current_stage || data.current_stage
+
+      // Only trigger callbacks on status change
+      if (status !== this.lastStatus) {
+        this.lastStatus = status
+        this.callbacks.onStatusChange(status, data)
+
+        switch (status) {
+          case 'awaiting_human_review':
+            this.callbacks.onAwaitingReview(data)
+            break
+          case 'completed':
+            this.callbacks.onCompleted(data)
+            this.stop()
+            break
+          case 'failed':
+            this.callbacks.onFailed(data)
+            this.stop()
+            break
+        }
+      }
+    } catch (error) {
+      this.callbacks.onError(error)
+    }
+  }
+
+  setPollRate(ms) {
+    this.pollRate = ms
+    if (this.interval) {
+      this.start() // Restart with new rate
+    }
+  }
+}
+
+// ============ Combined API Export ============
 export default {
   health: healthApi,
   jobs: jobsApi,
@@ -201,4 +268,5 @@ export default {
   test: testApi,
   review: reviewApi,
   bias: biasApi,
+  PipelinePoller,
 }

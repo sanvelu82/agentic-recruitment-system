@@ -9,11 +9,12 @@ This agent does NOT evaluate responses - only generates questions.
 
 import json
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 from uuid import uuid4
 
 from .base import BaseAgent
+from ..core.llm import get_agent_decision
 from ..schemas.job import ParsedJD, TestQuestion
 
 # LangChain imports for LLM integration (using Groq)
@@ -24,6 +25,45 @@ try:
     LANGCHAIN_AVAILABLE = True
 except ImportError:
     LANGCHAIN_AVAILABLE = False
+
+
+TEST_GENERATOR_SYSTEM_PROMPT = """You are an expert Technical Interviewer with 15+ years of experience creating assessment tests.
+Your task is to generate high-quality multiple-choice questions (MCQs) for technical assessments.
+
+You MUST return a JSON object with this EXACT schema:
+{
+    "questions": [
+        {
+            "question_text": "Clear, unambiguous question. Can include code snippets with markdown formatting.",
+            "options": {
+                "A": "First option",
+                "B": "Second option",
+                "C": "Third option",
+                "D": "Fourth option"
+            },
+            "correct_option": "A or B or C or D",
+            "explanation": "Detailed explanation of why this answer is correct and why others are wrong.",
+            "topic": "specific technical topic tested",
+            "difficulty": "easy|medium|hard"
+        }
+    ],
+    "topics_covered": ["topic1", "topic2"],
+    "confidence": 0.0 to 1.0
+}
+
+Question Generation Guidelines:
+1. Test PRACTICAL knowledge, not just memorization
+2. Each question must have exactly 4 options (A, B, C, D)
+3. Only ONE correct answer per question
+4. Include plausible distractors (wrong options should be believable)
+5. Avoid cultural bias, region-specific references, or discriminatory content
+6. Code snippets should be syntactically correct and well-formatted
+7. Explanations should teach - explain why correct answer is right AND why others are wrong
+8. Match difficulty level appropriately:
+   - easy: Basic concepts, syntax, definitions
+   - medium: Applied knowledge, debugging, best practices
+   - hard: Architecture decisions, optimization, edge cases
+"""
 
 
 # Predefined question templates as fallback
@@ -278,6 +318,9 @@ class TestGeneratorAgent(BaseAgent[TestGeneratorInput, TestGeneratorOutput]):
     - Make hiring decisions
     """
     
+    # Class attributes required by BaseAgent
+    name: str = "test_generator"
+    
     def __init__(self, agent_id: Optional[str] = None, model: str = "llama-3.3-70b-versatile"):
         super().__init__(agent_id)
         self.model_name = model
@@ -312,7 +355,10 @@ class TestGeneratorAgent(BaseAgent[TestGeneratorInput, TestGeneratorOutput]):
         state: Optional["PipelineState"] = None
     ) -> "AgentResult[TestGeneratorOutput]":
         """
-        Execute test generation and return result.
+        Execute test generation using LLM and return result.
+        
+        Uses get_agent_decision utility to generate MCQ questions based on
+        the technical_topics and difficulty_level from ParsedJD.
         
         Args:
             input_data: TestGeneratorInput with JD and parameters
@@ -328,19 +374,104 @@ class TestGeneratorAgent(BaseAgent[TestGeneratorInput, TestGeneratorOutput]):
             state = PipelineState()
         
         try:
-            result, confidence, explanation = self._process(input_data)
+            jd_data = input_data.parsed_jd
+            num_questions = min(input_data.num_questions, 10)  # Cap at 10 questions
+            
+            # Handle both dict and ParsedJD object
+            if isinstance(jd_data, dict):
+                job_id = jd_data.get("job_id", input_data.job_id or uuid4().hex)
+                technical_topics = jd_data.get("technical_topics", [])
+                difficulty_level = jd_data.get("difficulty_level", "intermediate")
+                job_title = jd_data.get("job_title_normalized", "Technical Role")
+                seniority = jd_data.get("seniority_level", "mid")
+            else:
+                job_id = jd_data.job_id
+                technical_topics = jd_data.technical_topics
+                difficulty_level = jd_data.difficulty_level
+                job_title = jd_data.job_title_normalized
+                seniority = jd_data.seniority_level
+            
+            self.log_reasoning(f"Generating {num_questions} questions for job {job_id[:8]}")
+            self.log_reasoning(f"Topics to cover: {technical_topics}")
+            self.log_reasoning(f"Difficulty level: {difficulty_level}")
+            
+            # Build user payload for LLM
+            user_payload = f"""Generate {num_questions} multiple-choice questions for a technical assessment.
+
+Job Title: {job_title}
+Seniority Level: {seniority}
+Difficulty Level: {difficulty_level}
+Technical Topics to Cover: {', '.join(technical_topics) if technical_topics else 'General programming concepts'}
+
+Requirements:
+1. Generate exactly {num_questions} questions
+2. Distribute questions across the provided technical topics
+3. Match the difficulty level: {difficulty_level}
+4. Each question must have 4 options (A, B, C, D) with exactly one correct answer
+5. Provide clear explanations for each answer
+
+Generate practical, job-relevant questions that test real-world understanding."""
+            
+            # Call LLM using the utility function
+            llm_response = get_agent_decision(TEST_GENERATOR_SYSTEM_PROMPT, user_payload)
+            self.log_reasoning("LLM question generation successful")
+            
+            # Parse LLM response and map to schema
+            extracted_data = json.loads(llm_response)
+            questions = self._map_to_schema(job_id, extracted_data)
+            
+            # Calculate difficulty breakdown
+            difficulty_breakdown = {"easy": 0, "medium": 0, "hard": 0}
+            for q in questions:
+                diff = q.difficulty.lower()
+                if diff in difficulty_breakdown:
+                    difficulty_breakdown[diff] += 1
+            
+            topics_covered = extracted_data.get("topics_covered", list(set(q.topic for q in questions)))
+            
+            test_id = uuid4().hex
+            output = TestGeneratorOutput(
+                test_id=test_id,
+                job_id=job_id,
+                questions=questions,
+                total_time_minutes=len(questions) * 2,  # 2 min per question
+                topics_covered=topics_covered,
+                difficulty_breakdown=difficulty_breakdown,
+            )
+            
+            confidence = extracted_data.get("confidence", 0.85)
+            explanation = (
+                f"Generated test with {len(questions)} questions. "
+                f"Covers {len(topics_covered)} topics: {', '.join(topics_covered[:5])}. "
+                f"Difficulty breakdown: {difficulty_breakdown}. "
+                f"Estimated time: {output.total_time_minutes} minutes."
+            )
+            
+            self.log_reasoning(f"Test generation completed: {explanation}")
+            
+            # Update state with test questions
+            new_state = PipelineState(
+                pipeline_id=state.pipeline_id,
+                job_id=job_id,
+                current_stage=state.current_stage,
+                job_description=state.job_description,
+                parsed_jd=state.parsed_jd,
+                candidates=state.candidates,
+                test_questions=[q.to_dict() for q in questions],
+            )
             
             response = AgentResponse(
                 agent_name=self.name,
                 status=AgentStatus.SUCCESS,
-                output=result,
+                output=output,
                 confidence_score=confidence,
                 explanation=explanation,
             )
             
-            return AgentResult(response=response, state=state)
+            return AgentResult(response=response, state=new_state)
             
         except Exception as e:
+            self.log_reasoning(f"Test generation failed: {str(e)}")
             response = AgentResponse(
                 agent_name=self.name,
                 status=AgentStatus.FAILURE,
@@ -349,6 +480,41 @@ class TestGeneratorAgent(BaseAgent[TestGeneratorInput, TestGeneratorOutput]):
                 explanation=f"Test generation failed: {str(e)}",
             )
             return AgentResult(response=response, state=state)
+    
+    def _map_to_schema(
+        self,
+        job_id: str,
+        extracted_data: Dict[str, Any]
+    ) -> List[TestQuestion]:
+        """
+        Map LLM's JSON output to list of TestQuestion objects.
+        
+        Args:
+            job_id: The job ID these questions are for
+            extracted_data: Parsed JSON from LLM response
+        
+        Returns:
+            List of TestQuestion objects
+        """
+        questions = []
+        
+        for q_data in extracted_data.get("questions", []):
+            question = TestQuestion(
+                job_id=job_id,
+                question_text=q_data.get("question_text", ""),
+                options=q_data.get("options", {"A": "", "B": "", "C": "", "D": ""}),
+                correct_option=q_data.get("correct_option", "A"),
+                explanation=q_data.get("explanation", ""),
+                skill_tested=q_data.get("topic", ""),
+                topic=q_data.get("topic", ""),
+                difficulty=q_data.get("difficulty", "medium"),
+                time_limit_seconds=120,  # 2 minutes per question
+                points=1.0,
+                partial_credit_allowed=False,
+            )
+            questions.append(question)
+        
+        return questions
     
     def _process(
         self, 
@@ -392,28 +558,23 @@ class TestGeneratorAgent(BaseAgent[TestGeneratorInput, TestGeneratorOutput]):
             for level, ratio in diff_dist.items()
         }
         
-        # Try LLM generation first
+        # Generate questions using LLM only
         llm = self._get_llm()
-        questions = []
-        topics_covered = []
         
-        if llm and LANGCHAIN_AVAILABLE and jd.technical_topics:
-            try:
-                questions, topics_covered = self._generate_with_llm(
-                    jd, num_questions, difficulty_breakdown, llm
-                )
-                self.log_reasoning(f"LLM generated {len(questions)} questions")
-            except Exception as e:
-                self.log_reasoning(f"LLM generation failed: {e}, using fallback")
-                questions, topics_covered = self._generate_from_templates(jd, num_questions)
-        else:
-            self.log_reasoning("LLM not available or no topics, using template fallback")
-            questions, topics_covered = self._generate_from_templates(jd, num_questions)
+        if not llm or not LANGCHAIN_AVAILABLE:
+            raise RuntimeError("LLM is not available. Cannot generate test questions without AI.")
         
-        # Ensure we have at least some questions
+        if not jd.technical_topics:
+            raise ValueError("No technical topics provided in job description. Cannot generate relevant questions.")
+        
+        # Generate questions with LLM - no fallback
+        questions, topics_covered = self._generate_with_llm(
+            jd, num_questions, difficulty_breakdown, llm
+        )
+        self.log_reasoning(f"LLM generated {len(questions)} questions")
+        
         if not questions:
-            self.log_reasoning("No questions generated, using generic questions")
-            questions, topics_covered = self._generate_generic_questions(num_questions)
+            raise RuntimeError("LLM failed to generate any questions. Please try again.")
         
         # Set job_id on all questions
         for q in questions:
@@ -534,105 +695,3 @@ Ensure questions are practical and test real-world understanding.""")
                 continue
         
         return questions[:num_questions], list(topics_covered)
-    
-    def _generate_from_templates(
-        self, 
-        jd: ParsedJD, 
-        num_questions: int
-    ) -> tuple[List[TestQuestion], List[str]]:
-        """Generate questions from predefined templates based on JD topics."""
-        
-        questions = []
-        topics_covered = set()
-        
-        # Map JD topics to available templates
-        topics = jd.technical_topics if jd.technical_topics else list(FALLBACK_QUESTIONS.keys())[:3]
-        
-        for topic in topics:
-            # Find matching template category
-            template_key = None
-            topic_lower = topic.lower()
-            
-            for key in FALLBACK_QUESTIONS.keys():
-                if key.lower() in topic_lower or topic_lower in key.lower():
-                    template_key = key
-                    break
-            
-            if template_key and template_key in FALLBACK_QUESTIONS:
-                for q_data in FALLBACK_QUESTIONS[template_key]:
-                    if len(questions) >= num_questions:
-                        break
-                    
-                    question = TestQuestion(
-                        job_id=jd.job_id,
-                        question_text=q_data["question_text"],
-                        options=q_data["options"],
-                        correct_option=q_data["correct_option"],
-                        explanation=q_data["explanation"],
-                        skill_tested=template_key,
-                        topic=template_key,
-                        difficulty=q_data["difficulty"],
-                        time_limit_seconds=120,
-                    )
-                    questions.append(question)
-                    topics_covered.add(template_key)
-            
-            if len(questions) >= num_questions:
-                break
-        
-        # Fill remaining with general questions if needed
-        if len(questions) < num_questions:
-            for key, q_list in FALLBACK_QUESTIONS.items():
-                for q_data in q_list:
-                    if len(questions) >= num_questions:
-                        break
-                    if key not in topics_covered:
-                        question = TestQuestion(
-                            job_id=jd.job_id,
-                            question_text=q_data["question_text"],
-                            options=q_data["options"],
-                            correct_option=q_data["correct_option"],
-                            explanation=q_data["explanation"],
-                            skill_tested=key,
-                            topic=key,
-                            difficulty=q_data["difficulty"],
-                            time_limit_seconds=120,
-                        )
-                        questions.append(question)
-                        topics_covered.add(key)
-                if len(questions) >= num_questions:
-                    break
-        
-        return questions[:num_questions], list(topics_covered)
-    
-    def _generate_generic_questions(
-        self, 
-        num_questions: int
-    ) -> tuple[List[TestQuestion], List[str]]:
-        """Generate generic programming questions as last resort."""
-        
-        questions = []
-        topics_covered = set()
-        
-        # Collect questions from all categories
-        all_questions = []
-        for key, q_list in FALLBACK_QUESTIONS.items():
-            for q_data in q_list:
-                all_questions.append((key, q_data))
-        
-        for i, (topic, q_data) in enumerate(all_questions[:num_questions]):
-            question = TestQuestion(
-                job_id="",
-                question_text=q_data["question_text"],
-                options=q_data["options"],
-                correct_option=q_data["correct_option"],
-                explanation=q_data["explanation"],
-                skill_tested=topic,
-                topic=topic,
-                difficulty=q_data["difficulty"],
-                time_limit_seconds=120,
-            )
-            questions.append(question)
-            topics_covered.add(topic)
-        
-        return questions, list(topics_covered)

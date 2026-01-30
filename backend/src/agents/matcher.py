@@ -7,12 +7,14 @@ Single purpose: Calculate similarity scores with explainable metrics.
 This agent does NOT make shortlisting decisions - only calculates scores.
 """
 
+import json
 import os
 import re
 from difflib import SequenceMatcher
 from typing import Any, Dict, List, Optional, Tuple
 
 from .base import BaseAgent
+from ..core.llm import get_agent_decision
 from ..schemas.candidates import ParsedResume, MatchResult, SkillMatch
 from ..schemas.job import ParsedJD, SkillRequirement
 
@@ -26,6 +28,46 @@ except ImportError:
 # Note: Groq does not provide embeddings API, so we rely on sentence-transformers
 # If sentence-transformers is unavailable, we fall back to fuzzy string matching
 GROQ_EMBEDDINGS_AVAILABLE = False  # Groq doesn't have embeddings endpoint
+
+
+MATCHER_SYSTEM_PROMPT = """You are an expert Technical Recruiter with 15+ years of experience in talent evaluation and candidate-job matching.
+Your task is to analyze how well a candidate's resume matches a job description.
+
+You MUST return a JSON object with this EXACT schema:
+{
+    "overall_match_score": 0.0 to 1.0 (weighted combination of all factors),
+    "skills_match_score": 0.0 to 1.0,
+    "experience_match_score": 0.0 to 1.0,
+    "education_match_score": 0.0 to 1.0,
+    "skill_matches": [
+        {
+            "required_skill": "skill from JD",
+            "candidate_skill": "matching skill from resume or empty string if missing",
+            "match_type": "exact|semantic|partial|missing",
+            "match_score": 0.0 to 1.0,
+            "explanation": "brief explanation of the match"
+        }
+    ],
+    "required_skills_met": number of required skills the candidate has,
+    "required_skills_total": total number of required skills in JD,
+    "preferred_skills_met": number of preferred skills the candidate has,
+    "preferred_skills_total": total number of preferred skills in JD,
+    "meets_experience_requirement": true or false,
+    "experience_gap_months": positive if exceeds requirement, negative if falls short,
+    "strengths": ["strength 1", "strength 2"],
+    "gaps": ["gap or missing skill 1", "gap 2"],
+    "match_explanation": "2-3 sentence summary of the overall match",
+    "confidence": 0.0 to 1.0
+}
+
+Scoring Guidelines:
+1. Skills (40% weight): Match each JD skill to candidate skills. Exact matches = 1.0, semantic matches = 0.8, partial = 0.5, missing = 0.0
+2. Experience (35% weight): Compare years of experience. Meeting minimum = 0.8, exceeding preferred = 1.0
+3. Education (25% weight): Match degree level and field of study
+4. Be objective and fair - focus on skills and qualifications, not personal characteristics
+5. Identify specific strengths that make the candidate stand out
+6. Identify critical gaps that could be deal-breakers
+"""
 
 
 class MatcherInput:
@@ -61,6 +103,9 @@ class MatcherAgent(BaseAgent[MatcherInput, MatchResult]):
     - Generate tests
     """
     
+    # Class attributes required by BaseAgent
+    name: str = "matcher"
+    
     def __init__(self, agent_id: Optional[str] = None, embedding_model: str = "all-MiniLM-L6-v2"):
         super().__init__(agent_id)
         self.embedding_model_name = embedding_model
@@ -89,7 +134,10 @@ class MatcherAgent(BaseAgent[MatcherInput, MatchResult]):
         state: Optional["PipelineState"] = None
     ) -> "AgentResult[MatchResult]":
         """
-        Execute matching and return result.
+        Execute matching using LLM and return result.
+        
+        Uses get_agent_decision utility to compare resume against JD,
+        then maps the response to a MatchResult schema.
         
         Args:
             input_data: MatcherInput with parsed resume and JD
@@ -105,7 +153,54 @@ class MatcherAgent(BaseAgent[MatcherInput, MatchResult]):
             state = PipelineState()
         
         try:
-            result, confidence, explanation = self._process(input_data)
+            resume = input_data.parsed_resume
+            jd = input_data.parsed_jd
+            
+            # Handle both object and dict inputs
+            if hasattr(resume, 'to_dict'):
+                resume_dict = resume.to_dict()
+                candidate_id = resume.candidate_id
+            else:
+                resume_dict = resume
+                candidate_id = resume.get('candidate_id', '')
+            
+            if hasattr(jd, 'to_dict'):
+                jd_dict = jd.to_dict()
+                job_id = jd.job_id
+            else:
+                jd_dict = jd
+                job_id = jd.get('job_id', '')
+            
+            self.log_reasoning(f"Matching candidate {candidate_id[:8]} to job {job_id[:8]}")
+            
+            # Build user payload for LLM
+            user_payload = f"""Compare this candidate's resume against the job description and calculate match scores.
+
+=== PARSED RESUME ===
+{json.dumps(resume_dict, indent=2, default=str)}
+
+=== PARSED JOB DESCRIPTION ===
+{json.dumps(jd_dict, indent=2, default=str)}
+
+Analyze the match and provide detailed scoring."""
+            
+            # Call LLM using the utility function
+            llm_response = get_agent_decision(MATCHER_SYSTEM_PROMPT, user_payload)
+            self.log_reasoning("LLM matching analysis successful")
+            
+            # Parse LLM response and map to schema
+            extracted_data = json.loads(llm_response)
+            result = self._map_to_schema(candidate_id, job_id, extracted_data)
+            
+            confidence = result.confidence
+            explanation = (
+                f"Matched candidate to job with {result.overall_match_score:.0%} overall score. "
+                f"Skills: {result.skills_match_score:.0%} ({result.required_skills_met}/{result.required_skills_total} required met), "
+                f"Experience: {result.experience_match_score:.0%}, Education: {result.education_match_score:.0%}. "
+                f"Found {len(result.strengths)} strengths and {len(result.gaps)} gaps."
+            )
+            
+            self.log_reasoning(f"Matching completed: {explanation}")
             
             response = AgentResponse(
                 agent_name=self.name,
@@ -118,6 +213,7 @@ class MatcherAgent(BaseAgent[MatcherInput, MatchResult]):
             return AgentResult(response=response, state=state)
             
         except Exception as e:
+            self.log_reasoning(f"Matching failed: {str(e)}")
             response = AgentResponse(
                 agent_name=self.name,
                 status=AgentStatus.FAILURE,
@@ -126,6 +222,56 @@ class MatcherAgent(BaseAgent[MatcherInput, MatchResult]):
                 explanation=f"Matching failed: {str(e)}",
             )
             return AgentResult(response=response, state=state)
+    
+    def _map_to_schema(
+        self,
+        candidate_id: str,
+        job_id: str,
+        extracted_data: Dict[str, Any]
+    ) -> MatchResult:
+        """
+        Map LLM's JSON output to MatchResult schema.
+        
+        Args:
+            candidate_id: Unique identifier for the candidate
+            job_id: Unique identifier for the job
+            extracted_data: Parsed JSON from LLM response
+        
+        Returns:
+            MatchResult object with all fields populated
+        """
+        # Build skill matches
+        skill_matches = []
+        for match_data in extracted_data.get("skill_matches", []):
+            skill_match = SkillMatch(
+                required_skill=match_data.get("required_skill", ""),
+                candidate_skill=match_data.get("candidate_skill", ""),
+                match_type=match_data.get("match_type", "missing"),
+                match_score=match_data.get("match_score", 0.0),
+                explanation=match_data.get("explanation", ""),
+            )
+            skill_matches.append(skill_match)
+        
+        return MatchResult(
+            candidate_id=candidate_id,
+            job_id=job_id,
+            overall_match_score=extracted_data.get("overall_match_score", 0.0),
+            confidence=extracted_data.get("confidence", 0.7),
+            skills_match_score=extracted_data.get("skills_match_score", 0.0),
+            experience_match_score=extracted_data.get("experience_match_score", 0.0),
+            education_match_score=extracted_data.get("education_match_score", 0.0),
+            skill_matches=skill_matches,
+            required_skills_met=extracted_data.get("required_skills_met", 0),
+            required_skills_total=extracted_data.get("required_skills_total", 0),
+            preferred_skills_met=extracted_data.get("preferred_skills_met", 0),
+            preferred_skills_total=extracted_data.get("preferred_skills_total", 0),
+            meets_experience_requirement=extracted_data.get("meets_experience_requirement", False),
+            experience_gap_months=extracted_data.get("experience_gap_months", 0),
+            match_explanation=extracted_data.get("match_explanation", ""),
+            strengths=extracted_data.get("strengths", []),
+            gaps=extracted_data.get("gaps", []),
+            bias_flags=[],
+        )
     
     def _process(
         self, 

@@ -7,14 +7,66 @@ Single purpose: Ensure fairness and compliance throughout the pipeline.
 This is a CRITICAL COMPLIANCE agent that reviews all decisions.
 """
 
+import json
 import re
 import statistics
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Tuple
 
 from .base import BaseAgent
+from ..core.llm import get_agent_decision
 from ..schemas.candidates import FinalRanking, MatchResult
 from ..schemas.messages import PipelineState
+
+
+BIAS_AUDITOR_SYSTEM_PROMPT = """You are an expert HR Compliance Officer and Bias Auditor with 20+ years of experience in fair hiring practices.
+Your task is to analyze candidate ranking data for potential bias patterns in the recruitment process.
+
+You MUST return a JSON object with this EXACT schema:
+{
+    "fairness_score": 0.0 to 1.0 (overall fairness assessment),
+    "audit_passed": true or false,
+    "findings": [
+        {
+            "category": "gender_bias|age_bias|location_bias|experience_bias|education_bias|scoring_anomaly",
+            "severity": "critical|high|medium|low",
+            "description": "detailed description of the finding",
+            "evidence": "specific data points or patterns that support this finding",
+            "affected_candidates": ["candidate_ids or 'all'"]
+        }
+    ],
+    "recommendations": [
+        "specific actionable recommendation for the recruiter"
+    ],
+    "score_distribution_analysis": {
+        "mean_score": number,
+        "score_variance": number,
+        "potential_outliers": ["candidate_ids"],
+        "clustering_detected": true or false
+    },
+    "compliance_notes": [
+        "compliance-related observation or requirement"
+    ],
+    "requires_human_review": true or false,
+    "confidence": 0.0 to 1.0
+}
+
+Bias Detection Guidelines:
+1. GENDER BIAS: Look for patterns where skills typically associated with one gender are scored differently
+2. AGE BIAS: Check if years of experience disproportionately affects scores beyond job requirements
+3. LOCATION BIAS: Identify if candidates from certain locations are systematically scored lower
+4. SCORING ANOMALIES: Look for inconsistent scoring patterns (similar skills, different scores)
+5. EDUCATION BIAS: Check if prestigious institutions are weighted unfairly over actual skills
+
+Fairness Score Guidelines:
+- 1.0: No bias detected, fair and consistent scoring
+- 0.8-0.99: Minor concerns, acceptable with notes
+- 0.6-0.79: Moderate concerns, requires review
+- 0.4-0.59: Significant concerns, requires immediate attention
+- Below 0.4: Critical issues, process should be halted
+
+Be thorough but fair - not every score difference indicates bias.
+"""
 
 
 # Comprehensive bias detection dictionaries
@@ -136,6 +188,9 @@ class BiasAuditorAgent(BaseAgent[BiasAuditInput, BiasAuditResult]):
     - Findings must be addressed before proceeding
     """
     
+    # Class attributes required by BaseAgent
+    name: str = "bias_auditor"
+    
     @property
     def description(self) -> str:
         return (
@@ -153,7 +208,10 @@ class BiasAuditorAgent(BaseAgent[BiasAuditInput, BiasAuditResult]):
         state: Optional["PipelineState"] = None
     ) -> "AgentResult[BiasAuditResult]":
         """
-        Execute bias audit and return result.
+        Execute bias audit using LLM analysis and return result.
+        
+        Reviews the final_rankings and PipelineState, sending the top 5 candidates'
+        anonymized data to the LLM to check for bias patterns.
         
         Args:
             input_data: BiasAuditInput with pipeline state and rankings
@@ -162,14 +220,70 @@ class BiasAuditorAgent(BaseAgent[BiasAuditInput, BiasAuditResult]):
         Returns:
             AgentResult with BiasAuditResult and updated state
         """
-        from ..schemas.messages import PipelineState
+        from ..schemas.messages import PipelineState as PS
         from .base import AgentResult, AgentResponse, AgentStatus
         
         if state is None:
-            state = PipelineState()
+            state = PS()
         
         try:
-            result, confidence, explanation = self._process(input_data)
+            self.log_reasoning("Starting comprehensive bias audit")
+            
+            # Get top 5 candidates from rankings
+            rankings = input_data.rankings[:5] if input_data.rankings else []
+            pipeline_state = input_data.pipeline_state
+            
+            # Prepare anonymized candidate data for LLM analysis
+            anonymized_candidates = self._prepare_anonymized_data(rankings, pipeline_state)
+            
+            # Also run traditional JD language audit
+            jd_findings = self._audit_jd_language(pipeline_state)
+            self.log_reasoning(f"JD language audit found {len(jd_findings)} issues")
+            
+            # Build user payload for LLM bias analysis
+            user_payload = f"""Analyze the following candidate ranking data for potential bias patterns.
+
+=== TOP 5 CANDIDATES (ANONYMIZED) ===
+{json.dumps(anonymized_candidates, indent=2)}
+
+=== PIPELINE CONTEXT ===
+Total candidates evaluated: {len(input_data.rankings) if input_data.rankings else 0}
+Shortlisted candidates: {len(pipeline_state.shortlisted_candidates) if pipeline_state.shortlisted_candidates else 0}
+
+=== JD LANGUAGE FINDINGS (Pre-screened) ===
+{json.dumps([{'category': f.category, 'severity': f.severity, 'description': f.description} for f in jd_findings], indent=2)}
+
+Analyze for:
+1. Scoring patterns that might indicate gender bias
+2. Age-related bias in experience scoring
+3. Location or institution bias
+4. Inconsistent scoring for similar skill profiles
+5. Any other fairness concerns
+
+Provide a thorough fairness assessment."""
+            
+            # Call LLM for bias analysis
+            llm_response = get_agent_decision(BIAS_AUDITOR_SYSTEM_PROMPT, user_payload)
+            self.log_reasoning("LLM bias analysis completed")
+            
+            # Parse LLM response and map to schema
+            extracted_data = json.loads(llm_response)
+            result = self._map_to_schema(extracted_data, jd_findings)
+            
+            confidence = extracted_data.get("confidence", 0.85)
+            
+            explanation = (
+                f"Bias audit {'PASSED' if result.audit_passed else 'REQUIRES REVIEW'}. "
+                f"Fairness score: {result.overall_fairness_score:.0%}. "
+                f"Found {len(result.findings)} issues "
+                f"(Critical: {sum(1 for f in result.findings if f.get('severity') == 'critical')}, "
+                f"High: {sum(1 for f in result.findings if f.get('severity') == 'high')}, "
+                f"Medium: {sum(1 for f in result.findings if f.get('severity') == 'medium')}, "
+                f"Low: {sum(1 for f in result.findings if f.get('severity') == 'low')}). "
+                f"{len(result.recommendations)} recommendations provided."
+            )
+            
+            self.log_reasoning(explanation)
             
             response = AgentResponse(
                 agent_name=self.name,
@@ -182,6 +296,7 @@ class BiasAuditorAgent(BaseAgent[BiasAuditInput, BiasAuditResult]):
             return AgentResult(response=response, state=state)
             
         except Exception as e:
+            self.log_reasoning(f"Bias audit failed: {str(e)}")
             response = AgentResponse(
                 agent_name=self.name,
                 status=AgentStatus.FAILURE,
@@ -190,6 +305,124 @@ class BiasAuditorAgent(BaseAgent[BiasAuditInput, BiasAuditResult]):
                 explanation=f"Bias audit failed: {str(e)}",
             )
             return AgentResult(response=response, state=state)
+    
+    def _prepare_anonymized_data(
+        self,
+        rankings: List[FinalRanking],
+        pipeline_state: PipelineState
+    ) -> List[Dict[str, Any]]:
+        """
+        Prepare anonymized candidate data for LLM analysis.
+        
+        Removes any personally identifiable information while retaining
+        skills, scores, and other job-relevant data.
+        
+        Args:
+            rankings: List of FinalRanking objects
+            pipeline_state: The full pipeline state
+        
+        Returns:
+            List of anonymized candidate dictionaries
+        """
+        anonymized = []
+        
+        for idx, ranking in enumerate(rankings):
+            # Handle both object and dict formats
+            if hasattr(ranking, 'to_dict'):
+                rank_data = ranking.to_dict()
+            else:
+                rank_data = ranking if isinstance(ranking, dict) else {}
+            
+            # Find matching candidate data from pipeline state
+            candidate_id = rank_data.get('candidate_id', '')
+            candidate_match = None
+            
+            # Look for match results
+            for match in (pipeline_state.match_results or []):
+                match_cid = match.get('candidate_id', '') if isinstance(match, dict) else getattr(match, 'candidate_id', '')
+                if match_cid == candidate_id:
+                    candidate_match = match if isinstance(match, dict) else match.to_dict() if hasattr(match, 'to_dict') else {}
+                    break
+            
+            anonymized_candidate = {
+                "candidate_number": idx + 1,  # Anonymized identifier
+                "rank": rank_data.get('rank', idx + 1),
+                "scores": {
+                    "resume_match_score": rank_data.get('resume_match_score', 0.0),
+                    "test_score": rank_data.get('test_score', 0.0),
+                    "final_composite_score": rank_data.get('final_composite_score', 0.0),
+                },
+                "recommendation": rank_data.get('recommendation', ''),
+                "key_strengths": rank_data.get('key_strengths', []),
+                "key_concerns": rank_data.get('key_concerns', []),
+            }
+            
+            # Add skill match data if available
+            if candidate_match:
+                anonymized_candidate["skills_match_score"] = candidate_match.get('skills_match_score', 0.0)
+                anonymized_candidate["experience_match_score"] = candidate_match.get('experience_match_score', 0.0)
+                anonymized_candidate["education_match_score"] = candidate_match.get('education_match_score', 0.0)
+                anonymized_candidate["required_skills_met"] = candidate_match.get('required_skills_met', 0)
+                anonymized_candidate["required_skills_total"] = candidate_match.get('required_skills_total', 0)
+            
+            anonymized.append(anonymized_candidate)
+        
+        return anonymized
+    
+    def _map_to_schema(
+        self,
+        extracted_data: Dict[str, Any],
+        jd_findings: List["BiasFinding"]
+    ) -> BiasAuditResult:
+        """
+        Map LLM's JSON output to BiasAuditResult schema.
+        
+        Args:
+            extracted_data: Parsed JSON from LLM response
+            jd_findings: Findings from JD language audit
+        
+        Returns:
+            BiasAuditResult object with all fields populated
+        """
+        # Combine LLM findings with JD language findings
+        llm_findings = extracted_data.get("findings", [])
+        
+        # Convert JD findings to dict format
+        jd_findings_dicts = [
+            {
+                "category": f.category,
+                "severity": f.severity,
+                "description": f.description,
+                "affected_items": f.affected_items,
+                "recommendation": f.recommendation,
+                "evidence": f.evidence,
+            }
+            for f in jd_findings
+        ]
+        
+        all_findings = llm_findings + jd_findings_dicts
+        
+        # Check for critical/high severity findings
+        has_critical = any(f.get('severity') == 'critical' for f in all_findings)
+        has_high = any(f.get('severity') == 'high' for f in all_findings)
+        
+        fairness_score = extracted_data.get("fairness_score", 0.8)
+        audit_passed = extracted_data.get("audit_passed", fairness_score >= 0.7 and not has_critical)
+        
+        return BiasAuditResult(
+            audit_passed=audit_passed,
+            overall_fairness_score=fairness_score,
+            findings=all_findings,
+            recommendations=extracted_data.get("recommendations", []),
+            requires_human_review=extracted_data.get("requires_human_review", not audit_passed or has_critical or has_high),
+            compliance_notes=extracted_data.get("compliance_notes", []),
+            detailed_analysis={
+                "score_distribution": extracted_data.get("score_distribution_analysis", {}),
+                "llm_confidence": extracted_data.get("confidence", 0.85),
+                "jd_issues_count": len(jd_findings),
+                "llm_issues_count": len(llm_findings),
+            },
+        )
     
     def _process(
         self, 

@@ -176,6 +176,7 @@ class PipelineState:
     decision_log: tuple[Dict[str, Any], ...] = field(default_factory=tuple)
     errors: tuple[str, ...] = field(default_factory=tuple)
     metadata: Dict[str, Any] = field(default_factory=dict)
+    candidate_test_responses: Dict[str, List[Dict[str, Any]]] = field(default_factory=dict)  # candidate_id -> responses
     
     # -------------------------------------------------------------------------
     # Immutable Update Methods

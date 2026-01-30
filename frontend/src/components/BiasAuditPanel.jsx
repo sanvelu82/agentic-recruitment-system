@@ -7,11 +7,71 @@ import {
   ChevronUp,
   XCircle,
   AlertCircle,
-  Info
+  Info,
+  Eye,
+  Scale,
+  TrendingUp
 } from 'lucide-react'
 
+// Circular Progress Component
+function CircularProgress({ value, size = 120, strokeWidth = 8, label }) {
+  const radius = (size - strokeWidth) / 2
+  const circumference = radius * 2 * Math.PI
+  const offset = circumference - (value / 100) * circumference
+  
+  const getColor = (val) => {
+    if (val >= 90) return { stroke: '#10B981', text: 'text-emerald-400', bg: 'text-emerald-500/20' }
+    if (val >= 70) return { stroke: '#6366F1', text: 'text-indigo-400', bg: 'text-indigo-500/20' }
+    if (val >= 50) return { stroke: '#F59E0B', text: 'text-amber-400', bg: 'text-amber-500/20' }
+    return { stroke: '#EF4444', text: 'text-red-400', bg: 'text-red-500/20' }
+  }
+  
+  const colors = getColor(value)
+
+  return (
+    <div className="relative inline-flex items-center justify-center">
+      <svg width={size} height={size} className="transform -rotate-90">
+        {/* Background circle */}
+        <circle
+          cx={size / 2}
+          cy={size / 2}
+          r={radius}
+          fill="none"
+          stroke="currentColor"
+          strokeWidth={strokeWidth}
+          className="text-surface-700"
+        />
+        {/* Progress circle */}
+        <circle
+          cx={size / 2}
+          cy={size / 2}
+          r={radius}
+          fill="none"
+          stroke={colors.stroke}
+          strokeWidth={strokeWidth}
+          strokeDasharray={circumference}
+          strokeDashoffset={offset}
+          strokeLinecap="round"
+          className="transition-all duration-1000 ease-out"
+          style={{
+            filter: `drop-shadow(0 0 6px ${colors.stroke}40)`
+          }}
+        />
+      </svg>
+      <div className="absolute inset-0 flex flex-col items-center justify-center">
+        <span className={`text-3xl font-bold ${colors.text}`}>
+          {value.toFixed(0)}%
+        </span>
+        {label && (
+          <span className="text-xs text-surface-400 mt-1">{label}</span>
+        )}
+      </div>
+    </div>
+  )
+}
+
 function BiasAuditPanel({ auditResults }) {
-  const [isExpanded, setIsExpanded] = useState(false)
+  const [isExpanded, setIsExpanded] = useState(true)
 
   if (!auditResults) return null
 
@@ -23,6 +83,8 @@ function BiasAuditPanel({ auditResults }) {
     compliance_notes = []
   } = auditResults
 
+  const fairnessPercent = (overall_fairness_score || 0) * 100
+
   const getSeverityCount = (severity) => {
     return findings.filter(f => f.severity === severity).length
   }
@@ -30,53 +92,82 @@ function BiasAuditPanel({ auditResults }) {
   const getSeverityStyles = (severity) => {
     switch (severity) {
       case 'critical':
-        return { bg: 'bg-red-100', text: 'text-red-800', border: 'border-red-200', icon: XCircle }
+        return { 
+          bg: 'bg-red-500/10', 
+          text: 'text-red-400', 
+          border: 'border-red-500/30', 
+          icon: XCircle,
+          badge: 'bg-red-500/20 text-red-400'
+        }
       case 'high':
-        return { bg: 'bg-orange-100', text: 'text-orange-800', border: 'border-orange-200', icon: AlertTriangle }
+        return { 
+          bg: 'bg-orange-500/10', 
+          text: 'text-orange-400', 
+          border: 'border-orange-500/30', 
+          icon: AlertTriangle,
+          badge: 'bg-orange-500/20 text-orange-400'
+        }
       case 'medium':
-        return { bg: 'bg-amber-100', text: 'text-amber-800', border: 'border-amber-200', icon: AlertCircle }
+        return { 
+          bg: 'bg-amber-500/10', 
+          text: 'text-amber-400', 
+          border: 'border-amber-500/30', 
+          icon: AlertCircle,
+          badge: 'bg-amber-500/20 text-amber-400'
+        }
       case 'low':
-        return { bg: 'bg-blue-100', text: 'text-blue-800', border: 'border-blue-200', icon: Info }
+        return { 
+          bg: 'bg-indigo-500/10', 
+          text: 'text-indigo-400', 
+          border: 'border-indigo-500/30', 
+          icon: Info,
+          badge: 'bg-indigo-500/20 text-indigo-400'
+        }
       default:
-        return { bg: 'bg-gray-100', text: 'text-gray-800', border: 'border-gray-200', icon: Info }
+        return { 
+          bg: 'bg-surface-800', 
+          text: 'text-surface-400', 
+          border: 'border-surface-700', 
+          icon: Info,
+          badge: 'bg-surface-700 text-surface-400'
+        }
     }
   }
 
   return (
-    <div className={`card border-2 ${
-      audit_passed ? 'border-green-200 bg-green-50/50' : 'border-amber-200 bg-amber-50/50'
-    }`}>
+    <div className="glass-card overflow-hidden">
       {/* Header */}
       <div 
-        className="flex items-center justify-between cursor-pointer"
+        className="flex items-center justify-between p-6 cursor-pointer hover:bg-white/5 transition-colors"
         onClick={() => setIsExpanded(!isExpanded)}
       >
         <div className="flex items-center gap-4">
-          <div className={`p-3 rounded-xl ${
-            audit_passed ? 'bg-green-100' : 'bg-amber-100'
-          }`}>
-            <Shield className={`w-6 h-6 ${
-              audit_passed ? 'text-green-600' : 'text-amber-600'
-            }`} />
+          <div className={`
+            p-3 rounded-xl
+            ${audit_passed 
+              ? 'bg-emerald-500/20 text-emerald-400' 
+              : 'bg-amber-500/20 text-amber-400'
+            }
+          `}>
+            <Shield className="w-6 h-6" />
           </div>
           <div>
-            <div className="flex items-center gap-2">
-              <h3 className="text-lg font-semibold text-gray-900">Bias Audit</h3>
+            <div className="flex items-center gap-3">
+              <h3 className="text-lg font-semibold text-white">Transparency Dashboard</h3>
               {audit_passed ? (
-                <span className="flex items-center gap-1 px-2 py-0.5 bg-green-100 text-green-700 text-xs font-medium rounded-full">
+                <span className="badge-success">
                   <CheckCircle className="w-3 h-3" />
-                  Passed
+                  Audit Passed
                 </span>
               ) : (
-                <span className="flex items-center gap-1 px-2 py-0.5 bg-amber-100 text-amber-700 text-xs font-medium rounded-full">
+                <span className="badge-warning">
                   <AlertTriangle className="w-3 h-3" />
                   Review Required
                 </span>
               )}
             </div>
-            <p className="text-sm text-gray-600">
-              Fairness Score: {(overall_fairness_score * 100).toFixed(0)}% • 
-              {findings.length} finding{findings.length !== 1 ? 's' : ''}
+            <p className="text-sm text-surface-400 mt-0.5">
+              Fairness Score: {fairnessPercent.toFixed(0)}% • {findings.length} finding{findings.length !== 1 ? 's' : ''}
             </p>
           </div>
         </div>
@@ -85,32 +176,27 @@ function BiasAuditPanel({ auditResults }) {
           {/* Severity summary badges */}
           <div className="hidden sm:flex items-center gap-2">
             {getSeverityCount('critical') > 0 && (
-              <span className="px-2 py-1 bg-red-100 text-red-700 text-xs font-medium rounded-full">
+              <span className="badge bg-red-500/20 text-red-400 border-red-500/30">
                 {getSeverityCount('critical')} Critical
               </span>
             )}
             {getSeverityCount('high') > 0 && (
-              <span className="px-2 py-1 bg-orange-100 text-orange-700 text-xs font-medium rounded-full">
+              <span className="badge bg-orange-500/20 text-orange-400 border-orange-500/30">
                 {getSeverityCount('high')} High
               </span>
             )}
             {getSeverityCount('medium') > 0 && (
-              <span className="px-2 py-1 bg-amber-100 text-amber-700 text-xs font-medium rounded-full">
+              <span className="badge bg-amber-500/20 text-amber-400 border-amber-500/30">
                 {getSeverityCount('medium')} Medium
-              </span>
-            )}
-            {getSeverityCount('low') > 0 && (
-              <span className="px-2 py-1 bg-blue-100 text-blue-700 text-xs font-medium rounded-full">
-                {getSeverityCount('low')} Low
               </span>
             )}
           </div>
           
-          <button className="p-2 hover:bg-gray-100 rounded-lg transition-colors">
+          <button className="p-2 rounded-lg hover:bg-white/5 transition-colors">
             {isExpanded ? (
-              <ChevronUp className="w-5 h-5 text-gray-500" />
+              <ChevronUp className="w-5 h-5 text-surface-400" />
             ) : (
-              <ChevronDown className="w-5 h-5 text-gray-500" />
+              <ChevronDown className="w-5 h-5 text-surface-400" />
             )}
           </button>
         </div>
@@ -118,40 +204,76 @@ function BiasAuditPanel({ auditResults }) {
 
       {/* Expanded Content */}
       {isExpanded && (
-        <div className="mt-6 space-y-6">
-          {/* Fairness Score Gauge */}
-          <div className="p-4 bg-white rounded-xl border border-gray-200">
-            <div className="flex items-center justify-between mb-2">
-              <span className="text-sm font-medium text-gray-700">Overall Fairness Score</span>
-              <span className={`text-lg font-bold ${
-                overall_fairness_score >= 0.9 ? 'text-green-600' :
-                overall_fairness_score >= 0.7 ? 'text-blue-600' :
-                overall_fairness_score >= 0.5 ? 'text-amber-600' : 'text-red-600'
-              }`}>
-                {(overall_fairness_score * 100).toFixed(0)}%
-              </span>
-            </div>
-            <div className="h-3 bg-gray-200 rounded-full overflow-hidden">
-              <div 
-                className={`h-full rounded-full transition-all duration-500 ${
-                  overall_fairness_score >= 0.9 ? 'bg-green-500' :
-                  overall_fairness_score >= 0.7 ? 'bg-blue-500' :
-                  overall_fairness_score >= 0.5 ? 'bg-amber-500' : 'bg-red-500'
-                }`}
-                style={{ width: `${overall_fairness_score * 100}%` }}
+        <div className="px-6 pb-6 space-y-6">
+          {/* Stats Row */}
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-6 pt-4 border-t border-surface-800">
+            {/* Circular Progress */}
+            <div className="glass-panel flex flex-col items-center justify-center py-6">
+              <CircularProgress 
+                value={fairnessPercent} 
+                size={140} 
+                strokeWidth={10}
+                label="Fairness"
               />
+              <p className="text-sm text-surface-400 mt-4 text-center">
+                Overall Fairness Score
+              </p>
             </div>
-            <div className="flex justify-between mt-1 text-xs text-gray-500">
-              <span>0%</span>
-              <span>50%</span>
-              <span>100%</span>
+
+            {/* Quick Stats */}
+            <div className="glass-panel p-6 flex flex-col justify-center">
+              <div className="flex items-center gap-3 mb-4">
+                <Eye className="w-5 h-5 text-indigo-400" />
+                <span className="text-sm font-medium text-surface-300">Audit Summary</span>
+              </div>
+              <div className="space-y-3">
+                <div className="flex items-center justify-between">
+                  <span className="text-sm text-surface-400">Total Findings</span>
+                  <span className="text-lg font-semibold text-white">{findings.length}</span>
+                </div>
+                <div className="flex items-center justify-between">
+                  <span className="text-sm text-surface-400">Critical Issues</span>
+                  <span className={`text-lg font-semibold ${getSeverityCount('critical') > 0 ? 'text-red-400' : 'text-emerald-400'}`}>
+                    {getSeverityCount('critical')}
+                  </span>
+                </div>
+                <div className="flex items-center justify-between">
+                  <span className="text-sm text-surface-400">Status</span>
+                  <span className={`text-sm font-semibold ${audit_passed ? 'text-emerald-400' : 'text-amber-400'}`}>
+                    {audit_passed ? 'Passed' : 'Needs Review'}
+                  </span>
+                </div>
+              </div>
+            </div>
+
+            {/* Compliance Info */}
+            <div className="glass-panel p-6 flex flex-col justify-center">
+              <div className="flex items-center gap-3 mb-4">
+                <Scale className="w-5 h-5 text-emerald-400" />
+                <span className="text-sm font-medium text-surface-300">Compliance</span>
+              </div>
+              <div className="space-y-2">
+                {compliance_notes.length > 0 ? (
+                  compliance_notes.slice(0, 3).map((note, idx) => (
+                    <div key={idx} className="flex items-start gap-2">
+                      <CheckCircle className="w-4 h-4 text-emerald-400 flex-shrink-0 mt-0.5" />
+                      <span className="text-xs text-surface-400 line-clamp-2">{note}</span>
+                    </div>
+                  ))
+                ) : (
+                  <p className="text-sm text-surface-500 italic">No compliance notes</p>
+                )}
+              </div>
             </div>
           </div>
 
           {/* Findings */}
           {findings.length > 0 && (
             <div>
-              <h4 className="text-sm font-medium text-gray-900 mb-3">Findings</h4>
+              <h4 className="text-sm font-semibold text-white mb-4 flex items-center gap-2">
+                <AlertTriangle className="w-4 h-4 text-amber-400" />
+                Findings
+              </h4>
               <div className="space-y-3">
                 {findings.map((finding, idx) => {
                   const styles = getSeverityStyles(finding.severity)
@@ -164,20 +286,25 @@ function BiasAuditPanel({ auditResults }) {
                     >
                       <div className="flex items-start gap-3">
                         <Icon className={`w-5 h-5 ${styles.text} flex-shrink-0 mt-0.5`} />
-                        <div className="flex-1">
-                          <div className="flex items-center gap-2 mb-1">
-                            <span className={`text-xs font-semibold uppercase ${styles.text}`}>
+                        <div className="flex-1 min-w-0">
+                          <div className="flex items-center gap-2 mb-1 flex-wrap">
+                            <span className={`text-xs font-bold uppercase ${styles.text}`}>
                               {finding.severity}
                             </span>
-                            <span className={`text-xs ${styles.text} opacity-75`}>
-                              • {finding.category?.replace(/_/g, ' ')}
-                            </span>
+                            {finding.category && (
+                              <span className={`text-xs ${styles.text} opacity-70`}>
+                                • {finding.category?.replace(/_/g, ' ')}
+                              </span>
+                            )}
                           </div>
-                          <p className={`text-sm ${styles.text}`}>{finding.description}</p>
+                          <p className="text-sm text-surface-200">{finding.description}</p>
                           {finding.recommendation && (
-                            <p className={`text-xs mt-2 ${styles.text} opacity-75`}>
-                              <span className="font-medium">Recommendation:</span> {finding.recommendation}
-                            </p>
+                            <div className="mt-2 flex items-start gap-2">
+                              <TrendingUp className="w-4 h-4 text-indigo-400 flex-shrink-0 mt-0.5" />
+                              <p className="text-xs text-surface-400">
+                                {finding.recommendation}
+                              </p>
+                            </div>
                           )}
                         </div>
                       </div>
@@ -191,29 +318,33 @@ function BiasAuditPanel({ auditResults }) {
           {/* Recommendations */}
           {recommendations.length > 0 && (
             <div>
-              <h4 className="text-sm font-medium text-gray-900 mb-3">Recommendations</h4>
-              <ul className="space-y-2">
-                {recommendations.map((rec, idx) => (
-                  <li key={idx} className="flex items-start gap-2 text-sm text-gray-600">
-                    <span className="text-primary-500 mt-1">•</span>
-                    {rec}
-                  </li>
-                ))}
-              </ul>
+              <h4 className="text-sm font-semibold text-white mb-4 flex items-center gap-2">
+                <TrendingUp className="w-4 h-4 text-indigo-400" />
+                Recommendations
+              </h4>
+              <div className="glass-panel p-4">
+                <ul className="space-y-3">
+                  {recommendations.map((rec, idx) => (
+                    <li key={idx} className="flex items-start gap-3">
+                      <div className="w-6 h-6 rounded-full bg-indigo-500/20 flex items-center justify-center flex-shrink-0">
+                        <span className="text-xs font-bold text-indigo-400">{idx + 1}</span>
+                      </div>
+                      <span className="text-sm text-surface-300">{rec}</span>
+                    </li>
+                  ))}
+                </ul>
+              </div>
             </div>
           )}
 
-          {/* Compliance Notes */}
-          {compliance_notes.length > 0 && (
-            <div className="p-4 bg-gray-100 rounded-xl">
-              <h4 className="text-sm font-medium text-gray-900 mb-2">Compliance Notes</h4>
-              <ul className="space-y-1">
-                {compliance_notes.map((note, idx) => (
-                  <li key={idx} className="text-xs text-gray-600">
-                    {note}
-                  </li>
-                ))}
-              </ul>
+          {/* Empty State for Findings */}
+          {findings.length === 0 && (
+            <div className="text-center py-8">
+              <CheckCircle className="w-12 h-12 text-emerald-400 mx-auto mb-3" />
+              <p className="text-surface-300 font-medium">No bias findings detected</p>
+              <p className="text-sm text-surface-500 mt-1">
+                The recruitment process appears to be fair and unbiased
+              </p>
             </div>
           )}
         </div>

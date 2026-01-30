@@ -5,6 +5,7 @@ This is the entry point for the REST API.
 """
 
 from contextlib import asynccontextmanager
+from dataclasses import replace
 from typing import Any, Dict, List, Optional
 import os
 
@@ -396,8 +397,9 @@ async def submit_test(pipeline_id: str, submission: TestSubmissionRequest):
     if submission.candidate_id not in state.shortlisted_candidates:
         raise HTTPException(status_code=403, detail="Candidate not authorized to submit")
     
-    # Store responses
-    state.candidate_test_responses[submission.candidate_id] = submission.responses
+    # Store responses using immutable state update
+    new_responses = {**state.candidate_test_responses, submission.candidate_id: submission.responses}
+    orchestrator.state = replace(orchestrator.state, candidate_test_responses=new_responses)
     
     return {
         "message": "Test submitted successfully",
@@ -425,17 +427,26 @@ async def submit_human_review(review: HumanReviewRequest):
             detail=f"Pipeline not awaiting review. Current stage: {state.current_stage.value}"
         )
     
-    state.human_review_notes.append(
+    # Update human review notes using immutable state update
+    new_notes = list(state.human_review_notes) + [
         f"[{review.reviewer}]: {'Approved' if review.approved else 'Rejected'} - {review.notes}"
-    )
+    ]
     
     if review.approved:
-        # Resume pipeline from last stage
-        # In a full implementation, would track which stage to resume from
+        # Resume pipeline by setting stage to SHORTLISTING to continue execution
+        orchestrator.state = replace(
+            orchestrator.state,
+            current_stage=PipelineStage.SHORTLISTING,
+            human_review_notes=new_notes
+        )
         return {"message": "Review approved. Call /api/pipelines/{id}/run to continue."}
     else:
-        state.current_stage = PipelineStage.FAILED
-        state.errors.append(f"Rejected by human review: {review.notes}")
+        orchestrator.state = replace(
+            orchestrator.state,
+            current_stage=PipelineStage.FAILED,
+            human_review_notes=new_notes,
+            errors=list(state.errors) + [f"Rejected by human review: {review.notes}"]
+        )
         return {"message": "Pipeline rejected by human review."}
 
 
